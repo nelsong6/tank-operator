@@ -3,11 +3,19 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .sessions import SessionInfo, SessionManager, SessionNotFound, SessionNotOwned
+from .exec_proxy import bridge
+from .sessions import (
+    SESSIONS_NAMESPACE,
+    PodNotReady,
+    SessionInfo,
+    SessionManager,
+    SessionNotFound,
+    SessionNotOwned,
+)
 
 sessions = SessionManager()
 
@@ -61,6 +69,32 @@ async def delete_session(
     except SessionNotOwned:
         raise HTTPException(status_code=403, detail="session not owned by caller")
     return {"id": session_id, "status": "deleted"}
+
+
+@app.websocket("/api/sessions/{session_id}/exec")
+async def session_exec(ws: WebSocket, session_id: str) -> None:
+    email = ws.headers.get("x-auth-request-email")
+    if not email:
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="missing X-Auth-Request-Email")
+        return
+
+    try:
+        pod_name = await sessions.get_pod_name(owner=email, session_id=session_id)
+    except SessionNotOwned:
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="not owner")
+        return
+    except SessionNotFound:
+        await ws.close(code=status.WS_1011_INTERNAL_ERROR, reason="session not found")
+        return
+    except PodNotReady:
+        await ws.close(code=status.WS_1011_INTERNAL_ERROR, reason="pod not ready")
+        return
+
+    await ws.accept()
+    try:
+        await bridge(ws, namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
+    except WebSocketDisconnect:
+        pass
 
 
 _static_env = os.environ.get("TANK_OPERATOR_STATIC_DIR")

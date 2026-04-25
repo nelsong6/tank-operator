@@ -102,3 +102,50 @@ button:disabled {
   color: #777;
   border-style: dashed;
 }
+
+.sessions .open {
+  background: transparent;
+  border: none;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 1rem;
+  text-align: left;
+  padding: 0;
+}
+
+.sessions .open:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sessions .delete {
+  padding: 0.2rem 0.5rem;
+}
+
+.terminal-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #0e0e10;
+}
+
+.terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid #2a2a2f;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.85rem;
+}
+
+.terminal-id {
+  color: #aaa;
+}
+
+.terminal-body {
+  flex: 1;
+  padding: 0.5rem;
+  overflow: hidden;
+}

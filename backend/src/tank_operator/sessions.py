@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 import uuid
@@ -18,6 +19,10 @@ class SessionNotFound(Exception):
 
 
 class SessionNotOwned(Exception):
+    pass
+
+
+class PodNotReady(Exception):
     pass
 
 
@@ -42,6 +47,7 @@ class SessionManager:
     def __init__(self) -> None:
         self._api: client.ApiClient | None = None
         self._batch: client.BatchV1Api | None = None
+        self._core: client.CoreV1Api | None = None
 
     async def startup(self) -> None:
         try:
@@ -50,6 +56,7 @@ class SessionManager:
             await config.load_kube_config()
         self._api = client.ApiClient()
         self._batch = client.BatchV1Api(self._api)
+        self._core = client.CoreV1Api(self._api)
 
     async def shutdown(self) -> None:
         if self._api is not None:
@@ -130,6 +137,32 @@ class SessionManager:
             )
             for j in jobs.items
         ]
+
+    async def get_pod_name(self, owner: str, session_id: str, timeout: float = 30.0) -> str:
+        """Look up the pod backing a session, waiting up to `timeout` seconds for it to be Running."""
+        assert self._batch is not None and self._core is not None
+        owner_label = _owner_label(owner)
+        name = f"session-{session_id}"
+        try:
+            job = await self._batch.read_namespaced_job(name=name, namespace=SESSIONS_NAMESPACE)
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SessionNotFound(session_id) from e
+            raise
+        if job.metadata.labels.get("tank-operator/owner") != owner_label:
+            raise SessionNotOwned(session_id)
+
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            pods = await self._core.list_namespaced_pod(
+                namespace=SESSIONS_NAMESPACE,
+                label_selector=f"tank-operator/session-id={session_id}",
+            )
+            for pod in pods.items:
+                if pod.status and pod.status.phase == "Running":
+                    return pod.metadata.name
+            await asyncio.sleep(1)
+        raise PodNotReady(session_id)
 
     async def delete(self, owner: str, session_id: str) -> None:
         assert self._batch is not None

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Terminal } from "./Terminal";
 
 interface Session {
   id: string;
@@ -11,6 +12,7 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [active, setActive] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -33,7 +35,9 @@ export function App() {
     try {
       const res = await fetch("/api/sessions", { method: "POST" });
       if (!res.ok) throw new Error(`create failed: ${res.status}`);
+      const created: Session = await res.json();
       await refresh();
+      setActive(created.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -45,10 +49,15 @@ export function App() {
     try {
       const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`delete failed: ${res.status}`);
+      if (active === id) setActive(null);
       await refresh();
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  if (active) {
+    return <Terminal sessionId={active} onClose={() => setActive(null)} />;
   }
 
   return (
@@ -63,9 +72,11 @@ export function App() {
       <ul className="sessions">
         {sessions.map((s) => (
           <li key={s.id}>
-            <span className="id">{s.id}</span>
-            <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
-            <button onClick={() => deleteSession(s.id)}>x</button>
+            <button className="open" onClick={() => setActive(s.id)} disabled={s.status !== "Active"}>
+              <span className="id">{s.id}</span>
+              <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
+            </button>
+            <button className="delete" onClick={() => deleteSession(s.id)}>x</button>
           </li>
         ))}
         {sessions.length === 0 && <li className="empty">no sessions</li>}
