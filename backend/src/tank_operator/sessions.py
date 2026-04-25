@@ -16,6 +16,12 @@ SESSIONS_NAMESPACE = os.environ.get("SESSIONS_NAMESPACE", "tank-operator-session
 SESSION_IMAGE = os.environ.get("SESSION_IMAGE", "romainecr.azurecr.io/claude-container:latest")
 SESSION_SERVICE_ACCOUNT = os.environ.get("SESSION_SERVICE_ACCOUNT", "claude-session")
 GITHUB_APP_SECRET = os.environ.get("GITHUB_APP_SECRET", "github-app-creds")
+# Stamping these on each session Deployment makes ArgoCD claim it into the
+# tank-operator-sessions Application's resource tree (visible alongside the
+# orchestrator's chart-managed resources). That app has no auto-sync, so
+# Argo never tries to reconcile / prune the dynamic deployments — pure
+# visualization.
+ARGOCD_TRACKING_APP = os.environ.get("ARGOCD_TRACKING_APP", "tank-operator-sessions")
 # Reaper config: a session with no open WS for IDLE_TIMEOUT_SECONDS gets
 # deleted by the periodic sweep. The 5-min default gives a comfortable
 # window for tab reloads / brief network blips while still honoring the
@@ -95,19 +101,25 @@ class SessionManager:
     def _deployment_manifest(self, session_id: str, owner: str) -> dict[str, Any]:
         owner_label = _owner_label(owner)
         selector_labels = {"tank-operator/session-id": session_id}
+        deployment_name = f"session-{session_id}"
+        argocd_tracking_id = (
+            f"{ARGOCD_TRACKING_APP}:apps/Deployment:{SESSIONS_NAMESPACE}/{deployment_name}"
+        )
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
             "metadata": {
-                "name": f"session-{session_id}",
+                "name": deployment_name,
                 "namespace": SESSIONS_NAMESPACE,
                 "labels": {
                     "app.kubernetes.io/managed-by": "tank-operator",
+                    "app.kubernetes.io/instance": ARGOCD_TRACKING_APP,
                     "tank-operator/owner": owner_label,
                     "tank-operator/session-id": session_id,
                 },
                 "annotations": {
                     "tank-operator/owner-email": owner,
+                    "argocd.argoproj.io/tracking-id": argocd_tracking_id,
                 },
             },
             "spec": {

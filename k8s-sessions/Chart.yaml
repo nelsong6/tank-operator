@@ -1,0 +1,11 @@
+apiVersion: v2
+name: tank-operator-sessions
+description: |
+  Empty chart. Exists so an ArgoCD Application can use this directory as its
+  source. The orchestrator creates per-session Deployments at runtime stamped
+  with the `tank-operator-sessions` tracking-id; Argo discovers them and
+  surfaces them in this app's tree. The app deliberately has no auto-sync —
+  the point is to *visualize* drift, not reconcile it.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
