@@ -41,3 +41,21 @@ externalSecret:
         kvKey: github-app-installation-id
       - envVar: GITHUB_APP_PRIVATE_KEY
         kvKey: github-app-private-key
+  oauth:
+    secretName: tank-operator-oauth
+    # KV keys written by infra/oauth_app.tf; mapped onto OAUTH2_PROXY_* env vars below.
+    keys:
+      - envVar: OAUTH2_PROXY_CLIENT_ID
+        kvKey: tank-operator-oauth-client-id
+      - envVar: OAUTH2_PROXY_CLIENT_SECRET
+        kvKey: tank-operator-oauth-client-secret
+      - envVar: OAUTH2_PROXY_COOKIE_SECRET
+        kvKey: tank-operator-oauth-cookie-secret
+      - envVar: ALLOWED_EMAIL
+        kvKey: tank-operator-oauth-allowed-email
+
+oauth2Proxy:
+  image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+  replicas: 1
+  # Entra tenant — same one all the tofu work runs against.
+  tenantId: 2236b5e4-81d2-4d82-bde5-17b1037999ea

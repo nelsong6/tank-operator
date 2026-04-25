@@ -1,0 +1,99 @@
+# oauth2-proxy in front of the orchestrator. The HTTPRoute backend points here
+# (not at the tank-operator Service); after authenticating the request, the proxy
+# forwards to http://tank-operator:80 with X-Auth-Request-* headers populated.
+#
+# Email allowlist is mounted from the Secret as a single-line file so we can
+# update it by editing infra/variables.tf without changing the chart.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Values.namespaces.orchestrator }}
+  labels:
+    app.kubernetes.io/name: oauth2-proxy
+spec:
+  replicas: {{ .Values.oauth2Proxy.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: oauth2-proxy
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: {{ .Values.oauth2Proxy.image }}
+          args:
+            - --provider=entra-id
+            - --oidc-issuer-url=https://login.microsoftonline.com/{{ .Values.oauth2Proxy.tenantId }}/v2.0
+            - --redirect-url=https://{{ .Values.ingress.hostname }}/oauth2/callback
+            - --upstream=http://tank-operator.{{ .Values.namespaces.orchestrator }}.svc.cluster.local/
+            - --http-address=0.0.0.0:4180
+            - --reverse-proxy=true
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --skip-provider-button=true
+            - --pass-access-token=true
+            - --pass-authorization-header=true
+            - --set-authorization-header=true
+            - --pass-user-headers=true
+            - --set-xauthrequest=true
+            - --scope=openid email profile
+            - --email-domain=*
+            - --authenticated-emails-file=/etc/oauth2-proxy/allowed-emails
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.oauth.secretName }}
+                  key: OAUTH2_PROXY_CLIENT_ID
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.oauth.secretName }}
+                  key: OAUTH2_PROXY_CLIENT_SECRET
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecret.oauth.secretName }}
+                  key: OAUTH2_PROXY_COOKIE_SECRET
+          ports:
+            - name: http
+              containerPort: 4180
+          volumeMounts:
+            - name: allowed-emails
+              mountPath: /etc/oauth2-proxy
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: allowed-emails
+          secret:
+            secretName: {{ .Values.externalSecret.oauth.secretName }}
+            items:
+              - key: ALLOWED_EMAIL
+                path: allowed-emails
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  selector:
+    app.kubernetes.io/name: oauth2-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
