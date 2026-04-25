@@ -76,10 +76,10 @@ resource "azurerm_key_vault_secret" "jwt_secret" {
   key_vault_id = data.azurerm_key_vault.kv.id
 }
 
+# Comma-joined list — the backend splits on `,` and lowercases on startup.
+# KV secrets are flat strings, so this is the simplest stable encoding.
 resource "azurerm_key_vault_secret" "oauth_allowed_emails" {
   name         = "tank-operator-oauth-allowed-emails"
-  # Comma-joined list — the backend splits on `,` and lowercases. KV secrets
-  # are flat strings, so this is the simplest stable encoding.
   value        = join(",", var.allowed_emails)
   key_vault_id = data.azurerm_key_vault.kv.id
 }
