@@ -8,13 +8,10 @@ namespaces:
   sessions: tank-operator-sessions
 
 orchestrator:
-  serviceAccount: infra-shared
-  # Client-id of the shared `infra-shared-identity` UAMI in the `infra` resource group.
-  # Same UAMI used by plant-agent / house-hunt / etc.; federation for
-  # `system:serviceaccount:tank-operator:infra-shared` is already provisioned by
-  # infra-bootstrap module.app. (The `tank-operator` Entra app — 76161dab... — is
-  # separate and only used for tofu/ACR push from CI.)
-  workloadIdentityClientId: 44b0ff37-b886-4101-ab19-23388ead9c0b
+  # Renamed from `infra-shared` to make explicit that this SA is *not* part of the
+  # cluster's shared workload-identity pool — the orchestrator only needs in-cluster
+  # K8s API auth (projected SA token + RoleBinding).
+  serviceAccount: tank-operator
   replicas: 1
 
 session:
