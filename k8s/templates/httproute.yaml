@@ -4,16 +4,24 @@ metadata:
   name: tank-operator
   namespace: {{ .Values.namespaces.orchestrator }}
 spec:
-  parentRefs:
-    - name: {{ .Values.ingress.gatewayName }}
-      namespace: {{ .Values.ingress.gatewayNamespace }}
   hostnames:
-    - {{ .Values.ingress.host | quote }}
+    - {{ .Values.ingress.hostname }}
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.ingress.gatewayName }}
+      namespace: {{ .Values.ingress.gatewayNamespace }}
+    - group: gateway.networking.x-k8s.io
+      kind: XListenerSet
+      name: tank-operator
   rules:
     - matches:
         - path:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: tank-operator
+        - group: ""
+          kind: Service
+          name: tank-operator
           port: 80
+          weight: 1

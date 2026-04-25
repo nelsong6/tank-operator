@@ -8,25 +8,37 @@ namespaces:
   sessions: tank-operator-sessions
 
 orchestrator:
-  # SA created by infra-bootstrap tofu (workload identity federated).
   serviceAccount: infra-shared
+  # Entra app client-id for workload identity (same app used for CI OIDC; federation
+  # for system:serviceaccount:tank-operator:infra-shared still needs to be added in
+  # the infra-bootstrap module.app — the SA works for K8s API auth without it).
+  workloadIdentityClientId: 76161dab-4943-47e3-9204-d5979add5034
   replicas: 1
 
 session:
   image: romainecr.azurecr.io/claude-container:latest
   serviceAccount: claude-session
-  githubAppSecret: github-app-creds
   ttlSecondsAfterFinished: 60
 
 ingress:
-  host: tank.romaine.life
-  gatewayName: shared
+  hostname: tank.romaine.life
+  gatewayName: main
   gatewayNamespace: envoy-gateway-system
+  certIssuer: letsencrypt-prod
   tlsSecret: tank-operator-tls
-  certIssuer: letsencrypt
 
 externalSecret:
-  storeName: azure-kv
+  storeName: romaine-kv
   storeKind: ClusterSecretStore
-  remoteKey: github-app-tank-operator
   refreshInterval: 1h
+  # Each entry maps a remote KV secret to an env var that the github MCP server
+  # (running inside claude-container) reads. Same keys mcp-github uses.
+  githubApp:
+    secretName: github-app-creds
+    keys:
+      - envVar: GITHUB_APP_ID
+        kvKey: github-app-id
+      - envVar: GITHUB_APP_INSTALLATION_ID
+        kvKey: github-app-installation-id
+      - envVar: GITHUB_APP_PRIVATE_KEY
+        kvKey: github-app-private-key

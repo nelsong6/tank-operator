@@ -32,7 +32,7 @@ spec:
             - name: SESSION_SERVICE_ACCOUNT
               value: {{ .Values.session.serviceAccount | quote }}
             - name: GITHUB_APP_SECRET
-              value: {{ .Values.session.githubAppSecret | quote }}
+              value: {{ .Values.externalSecret.githubApp.secretName | quote }}
             - name: SESSION_TTL_SECONDS
               value: {{ .Values.session.ttlSecondsAfterFinished | quote }}
             - name: TANK_OPERATOR_STATIC_DIR
