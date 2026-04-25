@@ -24,11 +24,44 @@ from kubernetes_asyncio.stream import WsApiClient
 
 log = logging.getLogger(__name__)
 
-# Launch claude as the entry point. CLAUDE_CODE_OAUTH_TOKEN (mounted into the
-# pod via ExternalSecret) makes it use the user's subscription. If claude
-# exits we drop into bash so the user keeps a usable shell rather than the
-# session immediately closing.
-EXEC_COMMAND = ["bash", "-lc", "claude; exec bash"]
+# Pre-seed claude's first-run state so a fresh pod boots straight to the chat
+# prompt — no theme picker, no "trust this folder?", no "approve this API key?".
+# The state lives in two files:
+#   ~/.claude/settings.json       — theme
+#   ~/.claude.json                — onboarding flag + API-key trust list
+#                                   (keyed on last 22 chars of the key) +
+#                                   per-project trust for /workspace
+# Then exec claude. If claude exits we drop into bash so the WS stays useful.
+_BOOTSTRAP_SH = r"""
+mkdir -p /root/.claude
+cat > /root/.claude/settings.json <<'EOF'
+{"theme":"dark"}
+EOF
+last22="${ANTHROPIC_API_KEY: -22}"
+cat > /root/.claude.json <<EOF
+{
+  "hasCompletedOnboarding": true,
+  "customApiKeyResponses": {"approved": ["${last22}"], "rejected": []},
+  "projects": {
+    "/workspace": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {},
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": true,
+      "projectOnboardingSeenCount": 1,
+      "hasClaudeMdExternalIncludesApproved": false,
+      "hasClaudeMdExternalIncludesWarningShown": false,
+      "lastGracefulShutdown": false
+    }
+  }
+}
+EOF
+claude
+exec bash
+"""
+EXEC_COMMAND = ["bash", "-lc", _BOOTSTRAP_SH]
 
 STDIN_CHANNEL = 0
 STDOUT_CHANNEL = 1
