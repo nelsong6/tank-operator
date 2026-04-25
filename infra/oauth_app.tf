@@ -1,17 +1,21 @@
-# OAuth2 client app reg used by oauth2-proxy in front of tank-operator's web UI.
-# Distinct from the tank-operator CI Entra app (which is for tofu/ACR push from
-# GitHub Actions). The CI app's SP creates this one and becomes its owner via the
-# `Application.ReadWrite.OwnedBy` Graph role granted in infra-bootstrap module.app.
+# Entra app reg for the tank-operator web UI sign-in flow.
+#
+# Public SPA + the kill-me/microsoft-routes pattern: the browser uses MSAL.js
+# to obtain an Entra ID token, POSTs it to /api/auth/microsoft/login, the
+# backend validates it via JWKS and mints its own short-lived JWT for the
+# remainder of the session. No confidential client secret needed.
+#
+# Distinct from the tank-operator CI Entra app (which is for tofu/ACR push
+# from GitHub Actions). The CI app's SP creates this one and becomes its
+# owner; without the explicit `owners` attribute, the azuread provider
+# doesn't record ownership and `Application.ReadWrite.OwnedBy` returns 403
+# on any follow-up Graph call.
 
 data "azurerm_key_vault" "kv" {
   name                = var.key_vault_name
   resource_group_name = var.key_vault_resource_group
 }
 
-# Object ID of the SP running tofu (the tank-operator CI app). Used below as the
-# explicit `owners` value on the OAuth app — without it, the azuread provider
-# doesn't record ownership and `Application.ReadWrite.OwnedBy` returns 403 on
-# any follow-up Graph call (SP create, password add, etc.).
 data "azuread_client_config" "current" {}
 
 resource "azuread_application" "oauth" {
@@ -20,19 +24,15 @@ resource "azuread_application" "oauth" {
 
   owners = [data.azuread_client_config.current.object_id]
 
-  web {
+  # SPA platform — MSAL.js auth-code-with-PKCE flow, no client secret.
+  single_page_application {
     redirect_uris = [
-      "https://${var.hostname}/oauth2/callback",
+      "https://${var.hostname}/",
     ]
-
-    implicit_grant {
-      access_token_issuance_enabled = false
-      id_token_issuance_enabled     = false
-    }
   }
 
-  # Microsoft Graph: User.Read (delegated) is enough to read the signed-in user's
-  # email/profile so oauth2-proxy can populate X-Auth-Request-Email.
+  # Microsoft Graph: User.Read (delegated) is enough for MSAL to fetch the
+  # signed-in user's profile (email, name) for the ID token claims.
   required_resource_access {
     resource_app_id = "00000003-0000-0000-c000-000000000000"
 
@@ -47,14 +47,11 @@ resource "azuread_service_principal" "oauth" {
   client_id = azuread_application.oauth.client_id
 }
 
-resource "azuread_application_password" "oauth" {
-  application_id    = azuread_application.oauth.id
-  display_name      = "oauth2-proxy"
-  end_date_relative = "8760h" # 1 year — rotate via `tofu taint` + apply
-}
-
-resource "random_password" "cookie_secret" {
-  length  = 32
+# Self-signed JWT secret used by the backend to mint per-session tokens after
+# verifying the Entra ID token. Single secret, rotate by tainting and applying;
+# tainting invalidates all live sessions, which is fine for a single-user tool.
+resource "random_password" "jwt_secret" {
+  length  = 64
   special = false
 }
 
@@ -64,15 +61,9 @@ resource "azurerm_key_vault_secret" "oauth_client_id" {
   key_vault_id = data.azurerm_key_vault.kv.id
 }
 
-resource "azurerm_key_vault_secret" "oauth_client_secret" {
-  name         = "tank-operator-oauth-client-secret"
-  value        = azuread_application_password.oauth.value
-  key_vault_id = data.azurerm_key_vault.kv.id
-}
-
-resource "azurerm_key_vault_secret" "oauth_cookie_secret" {
-  name         = "tank-operator-oauth-cookie-secret"
-  value        = random_password.cookie_secret.result
+resource "azurerm_key_vault_secret" "jwt_secret" {
+  name         = "tank-operator-jwt-secret"
+  value        = random_password.jwt_secret.result
   key_vault_id = data.azurerm_key_vault.kv.id
 }
 
