@@ -25,23 +25,28 @@ from kubernetes_asyncio.stream import WsApiClient
 log = logging.getLogger(__name__)
 
 # Pre-seed claude's first-run state so a fresh pod boots straight to the chat
-# prompt — no theme picker, no "trust this folder?", no "approve this API key?".
-# The state lives in two files:
+# prompt — no theme picker, no "trust this folder?", no "approve this API key?",
+# no MCP marketplace prompt. The state lives in two files:
 #   ~/.claude/settings.json       — theme
 #   ~/.claude.json                — onboarding flag + API-key trust list
-#                                   (keyed on last 22 chars of the key) +
-#                                   per-project trust for /workspace
+#                                   (claude keys off the last 20 chars; we
+#                                   include 22 too in case that flips back) +
+#                                   per-project trust for /workspace +
+#                                   official-marketplace auto-install flags
 # Then exec claude. If claude exits we drop into bash so the WS stays useful.
 _BOOTSTRAP_SH = r"""
 mkdir -p /root/.claude
 cat > /root/.claude/settings.json <<'EOF'
 {"theme":"dark"}
 EOF
+last20="${ANTHROPIC_API_KEY: -20}"
 last22="${ANTHROPIC_API_KEY: -22}"
 cat > /root/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
-  "customApiKeyResponses": {"approved": ["${last22}"], "rejected": []},
+  "customApiKeyResponses": {"approved": ["${last20}", "${last22}"], "rejected": []},
+  "officialMarketplaceAutoInstallAttempted": true,
+  "officialMarketplaceAutoInstalled": true,
   "projects": {
     "/workspace": {
       "allowedTools": [],
