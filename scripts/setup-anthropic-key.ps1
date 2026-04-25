@@ -1,16 +1,20 @@
-# Stash a Claude Code subscription OAuth token in Azure Key Vault so session
-# pods can use the user's claude.ai subscription instead of an API key.
+# Stash an Anthropic API key in Azure Key Vault so session pods can launch
+# claude CLI fully authenticated (TUI + all features).
 #
-# Run this once per token rotation (the token is good for ~1 year). It
-# refreshes the ExternalSecret immediately so newly-created session pods
-# pick up the new value without waiting for the 1h ESO poll.
+# We use ANTHROPIC_API_KEY rather than the OAuth subscription path
+# (CLAUDE_CODE_OAUTH_TOKEN) because the env-var token is "inference-only"
+# and the full OAuth flow assumes a browser on the same machine — neither
+# fits a headless container.
 #
-# Usage:  .\scripts\setup-claude-token.ps1
+# Run on rotation. The script force-syncs the ExternalSecret so new session
+# pods pick up the value immediately (no waiting on the 1h ESO poll).
+#
+# Usage:  .\scripts\setup-anthropic-key.ps1
 
 $ErrorActionPreference = 'Stop'
 
 $Vault         = if ($env:VAULT)          { $env:VAULT }          else { 'romaine-kv' }
-$KvSecretName  = 'claude-code-oauth-token'
+$KvSecretName  = 'anthropic-api-key'
 $EsoNamespace  = if ($env:ESO_NAMESPACE)  { $env:ESO_NAMESPACE }  else { 'tank-operator-sessions' }
 $EsoName       = if ($env:ESO_NAME)       { $env:ESO_NAME }       else { 'github-app-creds' }
 
@@ -23,16 +27,13 @@ Require-Cmd az
 Require-Cmd kubectl
 
 Write-Host @'
-Generating a long-lived OAuth token tied to your claude.ai subscription.
+Storing your Anthropic API key in Azure Key Vault.
 
-In another terminal (or below), run:
-    claude setup-token
-
-It will open a browser, you'll authenticate against claude.ai, and the CLI
-will print a token (starts with `sk-ant-oat-...`). Copy it and paste it here.
+Get a key at https://console.anthropic.com/settings/keys (starts with `sk-ant-api...`).
+Paste it below — input is hidden.
 '@
 
-$secure = Read-Host -Prompt "`nPaste token" -AsSecureString
+$secure = Read-Host -Prompt "`nPaste API key" -AsSecureString
 $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try {
     $Token = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
@@ -41,7 +42,7 @@ try {
 }
 
 if ([string]::IsNullOrWhiteSpace($Token)) {
-    Write-Error "empty token, aborting"
+    Write-Error "empty value, aborting"
 }
 
 Write-Host ""
@@ -60,9 +61,9 @@ if ($LASTEXITCODE -ne 0) { Write-Error "kubectl annotate failed" }
 
 Write-Host @'
 
-Token stored. Newly created sessions will see CLAUDE_CODE_OAUTH_TOKEN.
+Key stored. Newly created sessions will see ANTHROPIC_API_KEY in their env.
 
-Note: pods that are already running will NOT pick up the new value (the env
-var is captured at pod creation). Click the 'x' on the session tile to kill
-it, then '+ new' for a fresh one.
+Note: pods that are already running will NOT pick up the new value (env vars
+are captured at pod creation). Click the 'x' on the session tile to kill it,
+then '+ new' for a fresh one.
 '@
