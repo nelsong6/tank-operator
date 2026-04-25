@@ -1,14 +1,15 @@
 """Bridges a FastAPI WebSocket to a K8s pods/exec WebSocket.
 
-Frontend protocol (kept deliberately small):
-- Text frames are stdin (utf-8 encoded keystrokes from xterm.js).
-- A text frame parsing as JSON `{"resize": [cols, rows]}` is interpreted as
-  a terminal-resize control message instead of stdin.
-- Server emits raw stdout/stderr bytes from the pod as text frames.
+The k8s pods/exec endpoint speaks the `v4.channel.k8s.io` protocol: binary
+frames whose first byte is the channel (0=stdin, 1=stdout, 2=stderr,
+3=error, 4=resize) followed by the payload. kubernetes_asyncio 35 exposes
+the raw aiohttp WebSocket — we do the channel framing ourselves.
 
-K8s pods/exec uses channelled binary frames per `v4.channel.k8s.io`:
-channel 0=stdin, 1=stdout, 2=stderr, 3=error, 4=resize. The
-kubernetes_asyncio stream client wraps the channelling.
+Frontend protocol (kept deliberately small):
+- Text frames are stdin (utf-8 keystrokes from xterm.js).
+- A text frame parsing as JSON `{"resize": [cols, rows]}` is a terminal
+  resize control message instead of stdin.
+- Server emits raw stdout/stderr bytes from the pod as text frames.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import asyncio
 import json
 import logging
 
+import aiohttp
 from fastapi import WebSocket, WebSocketDisconnect
 from kubernetes_asyncio import client
 from kubernetes_asyncio.stream import WsApiClient
@@ -24,12 +26,21 @@ log = logging.getLogger(__name__)
 
 EXEC_COMMAND = ["/bin/bash"]
 
+STDIN_CHANNEL = 0
+STDOUT_CHANNEL = 1
+STDERR_CHANNEL = 2
+ERROR_CHANNEL = 3
+RESIZE_CHANNEL = 4
+
 
 async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
     ws_client = WsApiClient()
     core = client.CoreV1Api(api_client=ws_client)
 
-    k8s_ws = await core.connect_get_namespaced_pod_exec(
+    # _preload_content=False makes WsApiClient return the aiohttp
+    # ws_connect() context manager directly; await + async-with to get the
+    # ClientWebSocketResponse.
+    cm = await core.connect_get_namespaced_pod_exec(
         name=pod_name,
         namespace=namespace,
         command=EXEC_COMMAND,
@@ -39,6 +50,18 @@ async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
         tty=True,
         _preload_content=False,
     )
+
+    try:
+        async with cm as k8s_ws:
+            await _pump(browser, k8s_ws)
+    finally:
+        await ws_client.close()
+
+
+async def _pump(browser: WebSocket, k8s_ws: aiohttp.ClientWebSocketResponse) -> None:
+    async def send_channel(channel: int, payload: bytes | str) -> None:
+        data = payload.encode("utf-8") if isinstance(payload, str) else payload
+        await k8s_ws.send_bytes(bytes([channel]) + data)
 
     async def browser_to_pod() -> None:
         try:
@@ -52,7 +75,8 @@ async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
 
                 text = msg.get("text")
                 if text is not None:
-                    handled = False
+                    # Resize control frames look like JSON; everything else
+                    # is raw stdin from xterm.js.
                     if text and text[0] == "{":
                         try:
                             ctrl = json.loads(text)
@@ -60,17 +84,16 @@ async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
                             ctrl = None
                         if isinstance(ctrl, dict) and "resize" in ctrl:
                             cols, rows = ctrl["resize"]
-                            await k8s_ws.write_channel(
-                                4,
+                            await send_channel(
+                                RESIZE_CHANNEL,
                                 json.dumps({"Width": int(cols), "Height": int(rows)}),
                             )
-                            handled = True
-                    if not handled:
-                        await k8s_ws.write_stdin(text)
+                            continue
+                    await send_channel(STDIN_CHANNEL, text)
                 else:
                     data = msg.get("bytes")
                     if data:
-                        await k8s_ws.write_stdin(data.decode("utf-8", errors="replace"))
+                        await send_channel(STDIN_CHANNEL, data)
         except WebSocketDisconnect:
             return
         except Exception:
@@ -78,23 +101,25 @@ async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
 
     async def pod_to_browser() -> None:
         try:
-            while True:
-                if not getattr(k8s_ws, "open", True):
+            async for wsmsg in k8s_ws:
+                if wsmsg.type == aiohttp.WSMsgType.BINARY:
+                    if not wsmsg.data:
+                        continue
+                    channel = wsmsg.data[0]
+                    payload = wsmsg.data[1:]
+                    if not payload:
+                        continue
+                    if channel in (STDOUT_CHANNEL, STDERR_CHANNEL):
+                        await browser.send_text(payload.decode("utf-8", errors="replace"))
+                    elif channel == ERROR_CHANNEL:
+                        log.warning("k8s exec error frame: %s", payload)
+                elif wsmsg.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
                     return
-                stdout = await k8s_ws.read_stdout(timeout=1)
-                if stdout:
-                    await browser.send_text(stdout)
-                stderr = await k8s_ws.read_stderr(timeout=0.01)
-                if stderr:
-                    await browser.send_text(stderr)
         except Exception:
             log.exception("pod → browser loop crashed")
 
-    try:
-        await asyncio.gather(browser_to_pod(), pod_to_browser())
-    finally:
-        try:
-            await k8s_ws.close()
-        except Exception:
-            pass
-        await ws_client.close()
+    await asyncio.gather(browser_to_pod(), pod_to_browser())
