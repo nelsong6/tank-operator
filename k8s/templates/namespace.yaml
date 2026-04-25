@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.sessions }}
+  labels:
+    app.kubernetes.io/managed-by: tank-operator

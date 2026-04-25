@@ -1,0 +1,10 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+.vite/
+
+.claude/settings.local.json

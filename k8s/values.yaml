@@ -1,0 +1,32 @@
+image:
+  repository: romainecr.azurecr.io/tank-operator
+  tag: latest
+  pullPolicy: Always
+
+namespaces:
+  orchestrator: tank-operator
+  sessions: tank-operator-sessions
+
+orchestrator:
+  # SA created by infra-bootstrap tofu (workload identity federated).
+  serviceAccount: infra-shared
+  replicas: 1
+
+session:
+  image: romainecr.azurecr.io/claude-container:latest
+  serviceAccount: claude-session
+  githubAppSecret: github-app-creds
+  ttlSecondsAfterFinished: 60
+
+ingress:
+  host: tank.romaine.life
+  gatewayName: shared
+  gatewayNamespace: envoy-gateway-system
+  tlsSecret: tank-operator-tls
+  certIssuer: letsencrypt
+
+externalSecret:
+  storeName: azure-kv
+  storeKind: ClusterSecretStore
+  remoteKey: github-app-tank-operator
+  refreshInterval: 1h

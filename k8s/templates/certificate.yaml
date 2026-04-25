@@ -1,0 +1,13 @@
+# Per-host cert. Drop this if the shared *.romaine.life Gateway already terminates TLS for this host.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: tank-operator-tls
+  namespace: {{ .Values.ingress.gatewayNamespace }}
+spec:
+  secretName: {{ .Values.ingress.tlsSecret }}
+  dnsNames:
+    - {{ .Values.ingress.host | quote }}
+  issuerRef:
+    name: {{ .Values.ingress.certIssuer }}
+    kind: ClusterIssuer

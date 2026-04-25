@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tank-operator
+  namespace: {{ .Values.namespaces.orchestrator }}
+  labels:
+    app.kubernetes.io/name: tank-operator
+spec:
+  replicas: {{ .Values.orchestrator.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tank-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tank-operator
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ .Values.orchestrator.serviceAccount }}
+      containers:
+        - name: tank-operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: SESSIONS_NAMESPACE
+              value: {{ .Values.namespaces.sessions | quote }}
+            - name: SESSION_IMAGE
+              value: {{ .Values.session.image | quote }}
+            - name: SESSION_SERVICE_ACCOUNT
+              value: {{ .Values.session.serviceAccount | quote }}
+            - name: GITHUB_APP_SECRET
+              value: {{ .Values.session.githubAppSecret | quote }}
+            - name: SESSION_TTL_SECONDS
+              value: {{ .Values.session.ttlSecondsAfterFinished | quote }}
+            - name: TANK_OPERATOR_STATIC_DIR
+              value: /app/static
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tank-operator
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  selector:
+    app.kubernetes.io/name: tank-operator
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

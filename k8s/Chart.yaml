@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tank-operator
+description: Web frontend over a K8s orchestrator that spawns ephemeral Claude agent pods.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

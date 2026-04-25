@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/__pycache__
+**/.venv
+**/.pytest_cache
+**/*.egg-info
+**/.vite
+.git
+.github
+k8s
+.claude
