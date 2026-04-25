@@ -9,10 +9,12 @@ namespaces:
 
 orchestrator:
   serviceAccount: infra-shared
-  # Entra app client-id for workload identity (same app used for CI OIDC; federation
-  # for system:serviceaccount:tank-operator:infra-shared still needs to be added in
-  # the infra-bootstrap module.app — the SA works for K8s API auth without it).
-  workloadIdentityClientId: 76161dab-4943-47e3-9204-d5979add5034
+  # Client-id of the shared `infra-shared-identity` UAMI in the `infra` resource group.
+  # Same UAMI used by plant-agent / house-hunt / etc.; federation for
+  # `system:serviceaccount:tank-operator:infra-shared` is already provisioned by
+  # infra-bootstrap module.app. (The `tank-operator` Entra app — 76161dab... — is
+  # separate and only used for tofu/ACR push from CI.)
+  workloadIdentityClientId: 44b0ff37-b886-4101-ab19-23388ead9c0b
   replicas: 1
 
 session:
