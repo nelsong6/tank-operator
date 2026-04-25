@@ -19,8 +19,11 @@ data "azurerm_key_vault" "kv" {
 data "azuread_client_config" "current" {}
 
 resource "azuread_application" "oauth" {
-  display_name     = "tank-operator-oauth"
-  sign_in_audience = "AzureADMyOrg"
+  display_name = "tank-operator-oauth"
+  # Personal MSA accounts (e.g. outlook.com) need this; AzureADMyOrg-only apps
+  # rejected by the consumer auth flow with `unauthorized_client`. Sign-in is
+  # still gated by the backend's ALLOWED_EMAIL allowlist.
+  sign_in_audience = "AzureADandPersonalMicrosoftAccount"
 
   owners = [data.azuread_client_config.current.object_id]
 
