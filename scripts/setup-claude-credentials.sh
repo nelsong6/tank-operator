@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Stash a claude.ai subscription credentials blob in Azure Key Vault so session
-# pods can launch the claude TUI fully authenticated against the user's
-# subscription (no API-credit burn).
+# Stash a Claude Code subscription credentials JSON in Azure Key Vault so
+# session pods can launch claude as a logged-in subscriber instead of paying
+# per-token via an API key.
 #
-# We use the full ~/.claude/.credentials.json (with `user:sessions:claude_code`
-# scope) rather than ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN: API keys
-# bill API credits, and the env-var OAuth path is "inference-only" — only the
-# credentials file satisfies the interactive TUI.
+# How to produce the JSON:
+#   1. In a Linux env (WSL works on Windows), `npm i -g @anthropic-ai/claude-code`.
+#   2. Run `claude` and complete `/login` in a browser.
+#   3. `cat ~/.claude/.credentials.json` — that's the blob this script wants.
 #
-# To get the JSON: in any Linux/WSL shell where claude is installed, run
-# `claude /login`, complete the browser flow, then `cat ~/.claude/.credentials.json`.
-# Paste the entire blob (single line) into this script.
-#
-# Run on rotation. The script force-syncs the ExternalSecret so new session
-# pods pick up the value immediately (no waiting on the 1h ESO poll).
+# The pod's bootstrap writes the same JSON to /root/.claude/.credentials.json
+# before launching claude, which makes the TUI behave as if you'd logged in
+# inside the container. The CLI auto-refreshes the access_token at runtime;
+# those refreshes stay in the pod's filesystem (not back in KV), so every
+# fresh pod starts from the snapshot here. Re-run when sessions stop
+# authenticating (refresh token expired or revoked).
 #
 # Usage: scripts/setup-claude-credentials.sh
 
 set -euo pipefail
 
 VAULT="${VAULT:-romaine-kv}"
-KV_SECRET_NAME="claude-credentials-json"
+KV_SECRET_NAME="claude-code-credentials"
 ESO_NAMESPACE="${ESO_NAMESPACE:-tank-operator-sessions}"
 ESO_NAME="${ESO_NAME:-github-app-creds}"
 
@@ -32,28 +32,24 @@ require() {
 }
 require az
 require kubectl
-require jq
 
 cat <<'INSTRUCTIONS'
-Storing your claude.ai subscription credentials in Azure Key Vault.
+Storing your Claude Code subscription credentials in Azure Key Vault.
 
-In a Linux/WSL shell where claude is installed:
-    claude /login          # complete the browser flow
-    cat ~/.claude/.credentials.json
-
-Paste the entire JSON blob below — input is hidden.
+Paste the contents of ~/.claude/.credentials.json below, then press Ctrl-D.
+(Generate by running `claude` in WSL/Linux and completing /login.)
 INSTRUCTIONS
 
 echo
-read -rsp "Paste credentials JSON: " BLOB
-echo
+JSON="$(cat)"
 
-if [[ -z "${BLOB}" ]]; then
-  echo "error: empty value, aborting" >&2
+if [[ -z "${JSON// }" ]]; then
+  echo "error: empty input, aborting" >&2
   exit 1
 fi
-if ! printf '%s' "${BLOB}" | jq -e '.claudeAiOauth.refreshToken' >/dev/null 2>&1; then
-  echo "error: input doesn't look like a credentials.json (missing .claudeAiOauth.refreshToken)" >&2
+
+if ! echo "${JSON}" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1; then
+  echo "error: input is not valid JSON, aborting" >&2
   exit 1
 fi
 
@@ -61,7 +57,7 @@ echo "→ Writing Key Vault secret ${VAULT}/${KV_SECRET_NAME}…"
 az keyvault secret set \
   --vault-name "${VAULT}" \
   --name "${KV_SECRET_NAME}" \
-  --value "${BLOB}" \
+  --value "${JSON}" \
   --output none
 
 echo "→ Forcing ExternalSecret refresh on ${ESO_NAMESPACE}/${ESO_NAME}…"
@@ -70,10 +66,7 @@ kubectl -n "${ESO_NAMESPACE}" annotate externalsecret "${ESO_NAME}" \
 
 cat <<'DONE'
 
-✓ Credentials stored. Newly created sessions will see CLAUDE_CREDENTIALS_JSON
-  in their env, and the bootstrap drops it at /root/.claude/.credentials.json.
+✓ Credentials stored. New "subscription" sessions will boot logged-in.
 
-Note: pods that are already running will NOT pick up the new value (env vars
-are captured at pod creation). Click the 'x' on the session tile to kill it,
-then '+ new' for a fresh one.
+Note: pods already running will NOT see the new value. Kill + recreate.
 DONE

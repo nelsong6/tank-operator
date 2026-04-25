@@ -25,33 +25,59 @@ from kubernetes_asyncio.stream import WsApiClient
 log = logging.getLogger(__name__)
 
 # Pre-seed claude's first-run state so a fresh pod boots straight to the chat
-# prompt — no theme picker, no "trust this folder?", no MCP marketplace prompt,
-# no "approve project MCP servers?". State lives in:
+# prompt — no theme picker, no "trust this folder?", no "approve this API key?",
+# no MCP marketplace prompt, no "approve project MCP servers?". State lives in:
 #   ~/.claude/settings.json       — theme
-#   ~/.claude/.credentials.json   — claude.ai subscription OAuth creds
-#                                   (full TUI auth — see CLAUDE_CREDENTIALS_JSON
-#                                   in k8s/values.yaml)
-#   ~/.claude.json                — onboarding flag + per-project trust for
-#                                   /workspace + official-marketplace
-#                                   auto-install flags + pre-approved set of
-#                                   project-level MCP servers (read from
-#                                   /workspace/.mcp.json so it stays correct
-#                                   as the image evolves)
+#   ~/.claude.json                — onboarding flag + API-key trust list
+#                                   (claude keys off the last 20 chars; we
+#                                   include 22 too in case that flips back) +
+#                                   per-project trust for /workspace +
+#                                   official-marketplace auto-install flags +
+#                                   pre-approved set of project-level MCP
+#                                   servers (read from /workspace/.mcp.json so
+#                                   it stays correct as the image evolves)
+#   ~/.claude/.credentials.json   — only in subscription mode: the OAuth tokens
+#                                   captured from a logged-in machine, written
+#                                   here so the TUI launches as a logged-in
+#                                   subscriber instead of demanding `claude
+#                                   /login` against a non-existent browser.
 # Then exec claude. If claude exits we drop into bash so the WS stays useful.
+#
+# `customApiKeyResponses` only matters in api_key mode; in subscription mode
+# claude reads from .credentials.json and never prompts about an API key.
+# Unsetting ANTHROPIC_API_KEY in subscription mode is important — if both are
+# present, claude prefers the API key and bills against it.
 _BOOTSTRAP_SH = r"""
 mkdir -p /root/.claude
 cat > /root/.claude/settings.json <<'EOF'
 {"theme":"dark"}
 EOF
-printf '%s' "${CLAUDE_CREDENTIALS_JSON}" > /root/.claude/.credentials.json
-chmod 600 /root/.claude/.credentials.json
 mcp_enabled='[]'
 if [ -f /workspace/.mcp.json ]; then
   mcp_enabled="$(jq -c '.mcpServers | keys' /workspace/.mcp.json)"
 fi
+case "${TANK_SESSION_MODE:-api_key}" in
+  subscription)
+    if [ -z "${CLAUDE_CODE_CREDENTIALS_JSON:-}" ]; then
+      echo "tank-operator: subscription mode but CLAUDE_CODE_CREDENTIALS_JSON is empty." >&2
+      echo "Run scripts/setup-claude-credentials.{sh,ps1} to populate Key Vault." >&2
+    else
+      printf '%s' "${CLAUDE_CODE_CREDENTIALS_JSON}" > /root/.claude/.credentials.json
+      chmod 600 /root/.claude/.credentials.json
+    fi
+    unset ANTHROPIC_API_KEY
+    api_key_block=''
+    ;;
+  *)
+    last20="${ANTHROPIC_API_KEY: -20}"
+    last22="${ANTHROPIC_API_KEY: -22}"
+    api_key_block="\"customApiKeyResponses\": {\"approved\": [\"${last20}\", \"${last22}\"], \"rejected\": []},"
+    ;;
+esac
 cat > /root/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
+  ${api_key_block}
   "officialMarketplaceAutoInstallAttempted": true,
   "officialMarketplaceAutoInstalled": true,
   "projects": {

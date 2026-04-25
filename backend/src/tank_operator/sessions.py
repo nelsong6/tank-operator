@@ -42,12 +42,17 @@ class PodNotReady(Exception):
     pass
 
 
+SESSION_MODES = ("api_key", "subscription")
+DEFAULT_SESSION_MODE = "api_key"
+
+
 @dataclass
 class SessionInfo:
     id: str
     pod_name: str | None
     owner: str
     status: str
+    mode: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,7 +103,7 @@ class SessionManager:
         if self._api is not None:
             await self._api.close()
 
-    def _deployment_manifest(self, session_id: str, owner: str) -> dict[str, Any]:
+    def _deployment_manifest(self, session_id: str, owner: str, mode: str) -> dict[str, Any]:
         owner_label = _owner_label(owner)
         selector_labels = {"tank-operator/session-id": session_id}
         deployment_name = f"session-{session_id}"
@@ -116,6 +121,7 @@ class SessionManager:
                     "app.kubernetes.io/instance": ARGOCD_TRACKING_APP,
                     "tank-operator/owner": owner_label,
                     "tank-operator/session-id": session_id,
+                    "tank-operator/mode": mode,
                 },
                 "annotations": {
                     "tank-operator/owner-email": owner,
@@ -134,6 +140,7 @@ class SessionManager:
                             "app.kubernetes.io/managed-by": "tank-operator",
                             "tank-operator/owner": owner_label,
                             "tank-operator/session-id": session_id,
+                            "tank-operator/mode": mode,
                             "azure.workload.identity/use": "true",
                         },
                     },
@@ -145,6 +152,13 @@ class SessionManager:
                                 "image": SESSION_IMAGE,
                                 "imagePullPolicy": "Always",
                                 "command": ["sleep", "infinity"],
+                                "env": [
+                                    # Read by exec_proxy's bootstrap to pick the
+                                    # auth path. Sourced at the env level (not
+                                    # via secret) because the value is per-pod,
+                                    # not a shared secret.
+                                    {"name": "TANK_SESSION_MODE", "value": mode},
+                                ],
                                 "envFrom": [
                                     {"secretRef": {"name": GITHUB_APP_SECRET}},
                                 ],
@@ -157,18 +171,20 @@ class SessionManager:
             },
         }
 
-    async def create(self, owner: str) -> SessionInfo:
+    async def create(self, owner: str, mode: str = DEFAULT_SESSION_MODE) -> SessionInfo:
         assert self._apps is not None
+        if mode not in SESSION_MODES:
+            raise ValueError(f"unknown session mode: {mode!r}")
         session_id = uuid.uuid4().hex[:10]
         await self._apps.create_namespaced_deployment(
             namespace=SESSIONS_NAMESPACE,
-            body=self._deployment_manifest(session_id, owner),
+            body=self._deployment_manifest(session_id, owner, mode),
         )
         # Seed activity so the reaper gives the session a full IDLE_TIMEOUT
         # to receive its first WS before being eligible for deletion.
         self._activity[session_id] = time.monotonic()
         self._ws_count[session_id] = 0
-        return SessionInfo(id=session_id, pod_name=None, owner=owner, status="Pending")
+        return SessionInfo(id=session_id, pod_name=None, owner=owner, status="Pending", mode=mode)
 
     async def list(self, owner: str) -> list[SessionInfo]:
         assert self._apps is not None
@@ -183,6 +199,7 @@ class SessionManager:
                 pod_name=None,
                 owner=owner,
                 status=_deployment_status(d),
+                mode=d.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE),
             )
             for d in deployments.items
         ]

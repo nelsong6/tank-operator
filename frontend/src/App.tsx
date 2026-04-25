@@ -2,12 +2,20 @@ import { useEffect, useState } from "react";
 import { Terminal } from "./Terminal";
 import { authedFetch, bootstrapAuth, logout } from "./auth";
 
+type SessionMode = "api_key" | "subscription";
+
 interface Session {
   id: string;
   pod_name: string | null;
   owner: string;
   status: string;
+  mode: SessionMode;
 }
+
+const MODE_LABELS: Record<SessionMode, string> = {
+  api_key: "API key",
+  subscription: "Subscription",
+};
 
 interface SessionUser {
   sub: string;
@@ -27,12 +35,26 @@ export function App() {
   // re-renders so switching tabs doesn't tear down the WebSocket.
   const [tabs, setTabs] = useState<string[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
 
   useEffect(() => {
     bootstrapAuth()
       .then(setUser)
       .catch((e) => setAuthError(String(e)));
   }, []);
+
+  // Close the mode dropdown on any outside click — easier than fiddling with
+  // refs and contains() for a one-button menu.
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest(".split-button")) return;
+      setModeMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [modeMenuOpen]);
 
   async function refresh() {
     try {
@@ -86,11 +108,16 @@ export function App() {
     });
   }
 
-  async function createSession() {
+  async function createSession(mode: SessionMode = "api_key") {
     setBusy(true);
+    setModeMenuOpen(false);
     setError(null);
     try {
-      const res = await authedFetch("/api/sessions", { method: "POST" });
+      const res = await authedFetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
       if (!res.ok) throw new Error(`create failed: ${res.status}`);
       const created: Session = await res.json();
       await refresh();
@@ -131,9 +158,41 @@ export function App() {
       <aside className="sidebar">
         <header className="sidebar-header">
           <h1>tank-operator</h1>
-          <button onClick={createSession} disabled={busy}>
-            + new
-          </button>
+          <div className={`split-button ${modeMenuOpen ? "open" : ""}`}>
+            <button
+              className="split-main"
+              onClick={() => createSession("api_key")}
+              disabled={busy}
+              title="new session (API key)"
+            >
+              + new
+            </button>
+            <button
+              className="split-toggle"
+              onClick={() => setModeMenuOpen((v) => !v)}
+              disabled={busy}
+              title="choose auth mode"
+              aria-label="choose auth mode"
+            >
+              ▾
+            </button>
+            {modeMenuOpen && (
+              <ul className="split-menu" role="menu">
+                <li>
+                  <button onClick={() => createSession("api_key")} disabled={busy}>
+                    {MODE_LABELS.api_key}
+                    <span className="hint">default · billed via API</span>
+                  </button>
+                </li>
+                <li>
+                  <button onClick={() => createSession("subscription")} disabled={busy}>
+                    {MODE_LABELS.subscription}
+                    <span className="hint">beta · uses claude.ai login</span>
+                  </button>
+                </li>
+              </ul>
+            )}
+          </div>
         </header>
         {error && <pre className="error">{error}</pre>}
         <ul className="sessions">
@@ -144,6 +203,7 @@ export function App() {
               <li key={s.id} className={isOpen ? "is-open" : ""}>
                 <button className="open" onClick={() => openTab(s.id)}>
                   <span className="id">{s.id}</span>
+                  <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
                   <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
                 </button>
                 <button

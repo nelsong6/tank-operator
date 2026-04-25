@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
 from .exec_proxy import bridge
 from .sessions import (
+    DEFAULT_SESSION_MODE,
+    SESSION_MODES,
     SESSIONS_NAMESPACE,
     PodNotReady,
     SessionInfo,
@@ -88,9 +90,21 @@ async def me(user: User = Depends(current_user)) -> dict[str, str]:
     return {"sub": user.sub, "email": user.email, "name": user.name}
 
 
+class CreateSessionBody(BaseModel):
+    # Body is optional on the wire (POST with no JSON still works) so the
+    # default-mode `+ new` button doesn't have to send anything.
+    mode: str = DEFAULT_SESSION_MODE
+
+
 @app.post("/api/sessions")
-async def create_session(user: User = Depends(current_user)) -> SessionInfo:
-    return await sessions.create(owner=user.email)
+async def create_session(
+    body: CreateSessionBody | None = None,
+    user: User = Depends(current_user),
+) -> SessionInfo:
+    mode = body.mode if body else DEFAULT_SESSION_MODE
+    if mode not in SESSION_MODES:
+        raise HTTPException(status_code=400, detail=f"unknown mode: {mode}")
+    return await sessions.create(owner=user.email, mode=mode)
 
 
 @app.get("/api/sessions")

@@ -1,27 +1,27 @@
-# Stash a claude.ai subscription credentials blob in Azure Key Vault so session
-# pods can launch the claude TUI fully authenticated against the user's
-# subscription (no API-credit burn).
+# Stash a Claude Code subscription credentials JSON in Azure Key Vault so
+# session pods can launch claude as a logged-in subscriber instead of paying
+# per-token via an API key.
 #
-# We use the full ~/.claude/.credentials.json (with `user:sessions:claude_code`
-# scope) rather than ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN: API keys
-# bill API credits, and the env-var OAuth path is "inference-only" — only the
-# credentials file satisfies the interactive TUI.
+# How to produce the JSON:
+#   1. In WSL (or any Linux env), `npm i -g @anthropic-ai/claude-code`.
+#   2. Run `claude` and complete `/login` in a browser.
+#   3. `cat ~/.claude/.credentials.json` — that's the blob this script wants.
 #
-# To get the JSON: in WSL (or any Linux shell) where claude is installed, run
-# `claude /login`, complete the browser flow, then `cat ~/.claude/.credentials.json`.
-# Paste the entire blob (single line) into this script.
+# The pod's bootstrap writes the same JSON to /root/.claude/.credentials.json
+# before launching claude, so the TUI treats the container as a logged-in
+# subscriber. The CLI auto-refreshes inside the pod, but those refreshes
+# don't get back to KV — every fresh pod starts from the snapshot here.
+# Re-run when sessions stop authenticating.
 #
-# Run on rotation. The script force-syncs the ExternalSecret so new session
-# pods pick up the value immediately (no waiting on the 1h ESO poll).
-#
-# Usage:  .\scripts\setup-claude-credentials.ps1
+# Usage:  Get-Content path\to\credentials.json | .\scripts\setup-claude-credentials.ps1
+#    or:  .\scripts\setup-claude-credentials.ps1   (then paste + Ctrl-Z + Enter)
 
 $ErrorActionPreference = 'Stop'
 
-$Vault         = if ($env:VAULT)          { $env:VAULT }          else { 'romaine-kv' }
-$KvSecretName  = 'claude-credentials-json'
-$EsoNamespace  = if ($env:ESO_NAMESPACE)  { $env:ESO_NAMESPACE }  else { 'tank-operator-sessions' }
-$EsoName       = if ($env:ESO_NAME)       { $env:ESO_NAME }       else { 'github-app-creds' }
+$Vault         = if ($env:VAULT)         { $env:VAULT }         else { 'romaine-kv' }
+$KvSecretName  = 'claude-code-credentials'
+$EsoNamespace  = if ($env:ESO_NAMESPACE) { $env:ESO_NAMESPACE } else { 'tank-operator-sessions' }
+$EsoName       = if ($env:ESO_NAME)      { $env:ESO_NAME }      else { 'github-app-creds' }
 
 function Require-Cmd($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -31,42 +31,47 @@ function Require-Cmd($name) {
 Require-Cmd az
 Require-Cmd kubectl
 
-Write-Host @'
-Storing your claude.ai subscription credentials in Azure Key Vault.
+if ([Console]::IsInputRedirected) {
+    $Json = [Console]::In.ReadToEnd()
+} else {
+    Write-Host @'
+Storing your Claude Code subscription credentials in Azure Key Vault.
 
-In WSL (or any Linux shell) where claude is installed:
-    claude /login          # complete the browser flow
-    cat ~/.claude/.credentials.json
-
-Paste the entire JSON blob below — input is hidden.
+Paste the contents of ~/.claude/.credentials.json below, then press Ctrl-Z and Enter.
+(Generate by running `claude` in WSL/Linux and completing /login.)
 '@
-
-$secure = Read-Host -Prompt "`nPaste credentials JSON" -AsSecureString
-$bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-try {
-    $Blob = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-} finally {
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+    $lines = @()
+    while ($null -ne ($line = [Console]::In.ReadLine())) { $lines += $line }
+    $Json = ($lines -join "`n")
 }
 
-if ([string]::IsNullOrWhiteSpace($Blob)) {
-    Write-Error "empty value, aborting"
+if ([string]::IsNullOrWhiteSpace($Json)) {
+    Write-Error "empty input, aborting"
 }
+
 try {
-    $parsed = $Blob | ConvertFrom-Json
-    if (-not $parsed.claudeAiOauth.refreshToken) { throw "missing .claudeAiOauth.refreshToken" }
+    [void]($Json | ConvertFrom-Json)
 } catch {
-    Write-Error "input doesn't look like a credentials.json: $_"
+    Write-Error "input is not valid JSON, aborting"
 }
 
-Write-Host ""
-Write-Host "-> Writing Key Vault secret $Vault/$KvSecretName ..."
-az keyvault secret set `
-    --vault-name $Vault `
-    --name $KvSecretName `
-    --value $Blob `
-    --output none
-if ($LASTEXITCODE -ne 0) { Write-Error "az keyvault secret set failed" }
+# Write JSON to a temp file because passing a multi-line value through `az`
+# arguments is fraught (newlines, quoting, length limits).
+$tmp = New-TemporaryFile
+try {
+    [IO.File]::WriteAllText($tmp.FullName, $Json)
+
+    Write-Host ""
+    Write-Host "-> Writing Key Vault secret $Vault/$KvSecretName ..."
+    az keyvault secret set `
+        --vault-name $Vault `
+        --name $KvSecretName `
+        --file $tmp.FullName `
+        --output none
+    if ($LASTEXITCODE -ne 0) { Write-Error "az keyvault secret set failed" }
+} finally {
+    Remove-Item $tmp.FullName -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "-> Forcing ExternalSecret refresh on $EsoNamespace/$EsoName ..."
 $ts = [int][double]::Parse((Get-Date -UFormat %s))
@@ -75,10 +80,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error "kubectl annotate failed" }
 
 Write-Host @'
 
-Credentials stored. Newly created sessions will see CLAUDE_CREDENTIALS_JSON
-in their env, and the bootstrap drops it at /root/.claude/.credentials.json.
+Credentials stored. New "subscription" sessions will boot logged-in.
 
-Note: pods that are already running will NOT pick up the new value (env vars
-are captured at pod creation). Click the 'x' on the session tile to kill it,
-then '+ new' for a fresh one.
+Note: pods already running will NOT see the new value. Kill + recreate.
 '@
