@@ -8,9 +8,17 @@ data "azurerm_key_vault" "kv" {
   resource_group_name = var.key_vault_resource_group
 }
 
+# Object ID of the SP running tofu (the tank-operator CI app). Used below as the
+# explicit `owners` value on the OAuth app — without it, the azuread provider
+# doesn't record ownership and `Application.ReadWrite.OwnedBy` returns 403 on
+# any follow-up Graph call (SP create, password add, etc.).
+data "azuread_client_config" "current" {}
+
 resource "azuread_application" "oauth" {
   display_name     = "tank-operator-oauth"
   sign_in_audience = "AzureADMyOrg"
+
+  owners = [data.azuread_client_config.current.object_id]
 
   web {
     redirect_uris = [
