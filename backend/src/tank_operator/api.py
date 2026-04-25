@@ -133,10 +133,11 @@ async def session_exec(ws: WebSocket, session_id: str) -> None:
         await ws.close(code=status.WS_1011_INTERNAL_ERROR, reason="pod not ready")
         return
 
-    try:
-        await bridge(ws, namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
-    except WebSocketDisconnect:
-        pass
+    async with sessions.track_ws(session_id):
+        try:
+            await bridge(ws, namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
+        except WebSocketDisconnect:
+            pass
 
 
 _static_env = os.environ.get("TANK_OPERATOR_STATIC_DIR")

@@ -35,6 +35,10 @@ spec:
               value: {{ .Values.externalSecret.githubApp.secretName | quote }}
             - name: SESSION_TTL_SECONDS
               value: {{ .Values.session.ttlSecondsAfterFinished | quote }}
+            - name: IDLE_TIMEOUT_SECONDS
+              value: {{ .Values.session.idleTimeoutSeconds | quote }}
+            - name: REAPER_INTERVAL_SECONDS
+              value: {{ .Values.session.reaperIntervalSeconds | quote }}
             - name: TANK_OPERATOR_STATIC_DIR
               value: /app/static
           envFrom:

@@ -21,6 +21,12 @@ session:
   image: romainecr.azurecr.io/claude-container:latest
   serviceAccount: claude-session
   ttlSecondsAfterFinished: 60
+  # Idle reaper: a session with no open WebSocket connections for this many
+  # seconds is deleted by the orchestrator's background sweep. Honors the
+  # README's "killed when the tab closes" promise (with a grace window for
+  # tab reloads / brief network blips).
+  idleTimeoutSeconds: 300
+  reaperIntervalSeconds: 60
 
 ingress:
   hostname: tank.romaine.life
