@@ -25,7 +25,9 @@ spec:
         - name: oauth2-proxy
           image: {{ .Values.oauth2Proxy.image }}
           args:
-            - --provider=entra-id
+            # entra-id was only wired into the dedicated provider in v7.10+; on
+            # v7.7.1 we use the generic oidc provider against the v2.0 endpoint.
+            - --provider=oidc
             - --oidc-issuer-url=https://login.microsoftonline.com/{{ .Values.oauth2Proxy.tenantId }}/v2.0
             - --redirect-url=https://{{ .Values.ingress.hostname }}/oauth2/callback
             - --upstream=http://tank-operator.{{ .Values.namespaces.orchestrator }}.svc.cluster.local/
