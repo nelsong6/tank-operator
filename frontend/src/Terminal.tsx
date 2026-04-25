@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -6,25 +6,26 @@ import "@xterm/xterm/css/xterm.css";
 interface Props {
   sessionId: string;
   status: string;
-  onClose: () => void;
-  onPoll: () => void;
+  /**
+   * When false the component stays mounted (preserving WS + scrollback) but
+   * the DOM is hidden via CSS. On every transition to true we re-run fit() so
+   * xterm picks up the now-visible viewport size.
+   */
+  visible: boolean;
 }
 
-const POLL_INTERVAL_MS = 1500;
-
-export function Terminal({ sessionId, status, onClose, onPoll }: Props) {
+export function Terminal({ sessionId, status, visible }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Poll the parent's session list while the Job is still Pending so we can
-  // open the WS the moment the pod transitions to Active.
-  useEffect(() => {
-    if (status === "Active") return;
-    const t = setInterval(onPoll, POLL_INTERVAL_MS);
-    return () => clearInterval(t);
-  }, [status, onPoll]);
+  const fitRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const [everActive, setEverActive] = useState(false);
 
   useEffect(() => {
-    if (status !== "Active") return;
+    if (status === "Active") setEverActive(true);
+  }, [status]);
+
+  useEffect(() => {
+    if (!everActive) return;
     if (!containerRef.current) return;
 
     const term = new XTerm({
@@ -34,12 +35,14 @@ export function Terminal({ sessionId, status, onClose, onPoll }: Props) {
       theme: { background: "#0e0e10", foreground: "#e6e6e6" },
     });
     const fit = new FitAddon();
+    fitRef.current = fit;
     term.loadAddon(fit);
     term.open(containerRef.current);
-    fit.fit();
+    if (visible) fit.fit();
 
     const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/sessions/${sessionId}/exec`;
     const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
     ws.binaryType = "arraybuffer";
 
     let cleanup: (() => void) | null = null;
@@ -94,23 +97,33 @@ export function Terminal({ sessionId, status, onClose, onPoll }: Props) {
       cleanup?.();
       ws.close();
       term.dispose();
+      fitRef.current = null;
+      wsRef.current = null;
     };
-  }, [sessionId, status]);
+    // visible intentionally omitted — we don't tear down on hide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, everActive]);
 
+  // Re-fit whenever this tab becomes visible. xterm computes rows/cols from
+  // the container's offsetWidth, which is 0 while display:none.
+  useEffect(() => {
+    if (visible && fitRef.current) {
+      fitRef.current.fit();
+    }
+  }, [visible]);
+
+  if (!everActive) {
+    return (
+      <div className="terminal-waiting" style={{ display: visible ? "flex" : "none" }}>
+        waiting for pod to be ready… (status: {status})
+      </div>
+    );
+  }
   return (
-    <div className="terminal-pane">
-      <header className="terminal-header">
-        <span className="terminal-id">{sessionId}</span>
-        <span className={`status status-${status.toLowerCase()}`}>{status}</span>
-        <button onClick={onClose}>back</button>
-      </header>
-      {status === "Active" ? (
-        <div ref={containerRef} className="terminal-body" />
-      ) : (
-        <div className="terminal-waiting">
-          waiting for pod to be ready… (status: {status})
-        </div>
-      )}
-    </div>
+    <div
+      ref={containerRef}
+      className="terminal-body"
+      style={{ display: visible ? "block" : "none" }}
+    />
   );
 }

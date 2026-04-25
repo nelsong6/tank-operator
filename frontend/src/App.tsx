@@ -15,12 +15,17 @@ interface SessionUser {
   name: string;
 }
 
+const POLL_INTERVAL_MS = 1500;
+
 export function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Open tabs are session IDs in insertion order. Tabs survive sidebar
+  // re-renders so switching tabs doesn't tear down the WebSocket.
+  const [tabs, setTabs] = useState<string[]>([]);
   const [active, setActive] = useState<string | null>(null);
 
   useEffect(() => {
@@ -44,6 +49,43 @@ export function App() {
     if (user) void refresh();
   }, [user]);
 
+  // While any open tab is still Pending, poll the list so the Terminal can
+  // transition out of the "waiting" placeholder once its pod is Active.
+  useEffect(() => {
+    if (!user) return;
+    const hasPending = tabs.some((id) => {
+      const s = sessions.find((x) => x.id === id);
+      return !s || s.status !== "Active";
+    });
+    if (!hasPending) return;
+    const t = setInterval(refresh, POLL_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [tabs, sessions, user]);
+
+  // Close tabs whose sessions disappeared (idle reaper, manual delete from
+  // another browser, etc.).
+  useEffect(() => {
+    setTabs((prev) => {
+      const next = prev.filter((id) => sessions.some((s) => s.id === id));
+      if (next.length === prev.length) return prev;
+      if (active && !next.includes(active)) setActive(next[next.length - 1] ?? null);
+      return next;
+    });
+  }, [sessions]);
+
+  function openTab(id: string) {
+    setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setActive(id);
+  }
+
+  function closeTab(id: string) {
+    setTabs((prev) => {
+      const next = prev.filter((x) => x !== id);
+      if (active === id) setActive(next[next.length - 1] ?? null);
+      return next;
+    });
+  }
+
   async function createSession() {
     setBusy(true);
     setError(null);
@@ -52,11 +94,7 @@ export function App() {
       if (!res.ok) throw new Error(`create failed: ${res.status}`);
       const created: Session = await res.json();
       await refresh();
-      // The Job is created Pending and stays so until the kubelet pulls the
-      // image and starts the container. Opening the WS before then races
-      // get_pod_name's readiness wait — surface a "starting" state and
-      // poll until the backend reports Active.
-      setActive(created.id);
+      openTab(created.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -68,7 +106,7 @@ export function App() {
     try {
       const res = await authedFetch(`/api/sessions/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`delete failed: ${res.status}`);
-      if (active === id) setActive(null);
+      closeTab(id);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -77,7 +115,7 @@ export function App() {
 
   if (authError) {
     return (
-      <div className="app">
+      <div className="empty-state">
         <pre className="error">auth error: {authError}</pre>
         <button onClick={() => location.reload()}>retry</button>
       </div>
@@ -85,48 +123,87 @@ export function App() {
   }
 
   if (!user) {
-    return (
-      <div className="app">
-        <p style={{ color: "#777" }}>signing in…</p>
-      </div>
-    );
-  }
-
-  if (active) {
-    const session = sessions.find((s) => s.id === active);
-    return (
-      <Terminal
-        sessionId={active}
-        status={session?.status ?? "Pending"}
-        onClose={() => setActive(null)}
-        onPoll={refresh}
-      />
-    );
+    return <div className="empty-state">signing in…</div>;
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>tank-operator</h1>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          <span style={{ color: "#888", fontSize: "0.85rem" }}>{user.email}</span>
-          <button onClick={createSession} disabled={busy}>+ new session</button>
+    <div className="shell">
+      <aside className="sidebar">
+        <header className="sidebar-header">
+          <h1>tank-operator</h1>
+          <button onClick={createSession} disabled={busy}>
+            + new
+          </button>
+        </header>
+        {error && <pre className="error">{error}</pre>}
+        <ul className="sessions">
+          {sessions.length === 0 && <li className="empty">no sessions</li>}
+          {sessions.map((s) => {
+            const isOpen = tabs.includes(s.id);
+            return (
+              <li key={s.id} className={isOpen ? "is-open" : ""}>
+                <button className="open" onClick={() => openTab(s.id)}>
+                  <span className="id">{s.id}</span>
+                  <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
+                </button>
+                <button
+                  className="delete"
+                  onClick={() => deleteSession(s.id)}
+                  title="delete session"
+                >
+                  x
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <footer className="sidebar-footer">
+          <span className="email">{user.email}</span>
           <button onClick={logout}>sign out</button>
-        </div>
-      </header>
-      {error && <pre className="error">{error}</pre>}
-      <ul className="sessions">
-        {sessions.map((s) => (
-          <li key={s.id}>
-            <button className="open" onClick={() => setActive(s.id)} disabled={s.status !== "Active"}>
-              <span className="id">{s.id}</span>
-              <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
-            </button>
-            <button className="delete" onClick={() => deleteSession(s.id)}>x</button>
-          </li>
-        ))}
-        {sessions.length === 0 && <li className="empty">no sessions</li>}
-      </ul>
+        </footer>
+      </aside>
+      <main className="workspace">
+        {tabs.length === 0 ? (
+          <div className="empty-state">click <code>+ new</code> or pick a session</div>
+        ) : (
+          <>
+            <nav className="tab-bar">
+              {tabs.map((id) => {
+                const s = sessions.find((x) => x.id === id);
+                const status = s?.status ?? "Pending";
+                return (
+                  <div key={id} className={`tab ${active === id ? "active" : ""}`}>
+                    <button className="tab-label" onClick={() => setActive(id)}>
+                      <span className="id">{id}</span>
+                      <span className={`status status-${status.toLowerCase()}`}>{status}</span>
+                    </button>
+                    <button
+                      className="tab-close"
+                      onClick={() => closeTab(id)}
+                      title="close tab (session keeps running)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </nav>
+            <div className="terminals">
+              {tabs.map((id) => {
+                const s = sessions.find((x) => x.id === id);
+                return (
+                  <Terminal
+                    key={id}
+                    sessionId={id}
+                    status={s?.status ?? "Pending"}
+                    visible={active === id}
+                  />
+                );
+              })}
+            </div>
+          </>
+        )}
+      </main>
     </div>
   );
 }
