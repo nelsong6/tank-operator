@@ -5,13 +5,26 @@ import "@xterm/xterm/css/xterm.css";
 
 interface Props {
   sessionId: string;
+  status: string;
   onClose: () => void;
+  onPoll: () => void;
 }
 
-export function Terminal({ sessionId, onClose }: Props) {
+const POLL_INTERVAL_MS = 1500;
+
+export function Terminal({ sessionId, status, onClose, onPoll }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Poll the parent's session list while the Job is still Pending so we can
+  // open the WS the moment the pod transitions to Active.
   useEffect(() => {
+    if (status === "Active") return;
+    const t = setInterval(onPoll, POLL_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [status, onPoll]);
+
+  useEffect(() => {
+    if (status !== "Active") return;
     if (!containerRef.current) return;
 
     const term = new XTerm({
@@ -67,7 +80,10 @@ export function Terminal({ sessionId, onClose }: Props) {
     };
 
     ws.onclose = (e) => {
-      term.write(`\r\n\x1b[33m[disconnected${e.reason ? `: ${e.reason}` : ""}]\x1b[0m\r\n`);
+      // code 1006 = abnormal closure with no close frame; for those the
+      // browser drops `reason`. Show the code so failures are diagnosable.
+      const detail = e.reason || `code ${e.code}`;
+      term.write(`\r\n\x1b[33m[disconnected: ${detail}]\x1b[0m\r\n`);
     };
 
     ws.onerror = () => {
@@ -79,15 +95,22 @@ export function Terminal({ sessionId, onClose }: Props) {
       ws.close();
       term.dispose();
     };
-  }, [sessionId]);
+  }, [sessionId, status]);
 
   return (
     <div className="terminal-pane">
       <header className="terminal-header">
         <span className="terminal-id">{sessionId}</span>
+        <span className={`status status-${status.toLowerCase()}`}>{status}</span>
         <button onClick={onClose}>back</button>
       </header>
-      <div ref={containerRef} className="terminal-body" />
+      {status === "Active" ? (
+        <div ref={containerRef} className="terminal-body" />
+      ) : (
+        <div className="terminal-waiting">
+          waiting for pod to be ready… (status: {status})
+        </div>
+      )}
     </div>
   );
 }

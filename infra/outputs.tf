@@ -9,6 +9,6 @@ output "oauth_app_object_id" {
 }
 
 output "redirect_uri" {
-  description = "Configured OAuth2 redirect URI."
-  value       = "https://${var.hostname}/oauth2/callback"
+  description = "MSAL.js SPA redirect URI registered on the Entra app."
+  value       = "https://${var.hostname}/"
 }

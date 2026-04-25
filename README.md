@@ -31,7 +31,9 @@ cd backend && pip install -e . && python -m tank_operator
 # Frontend
 cd frontend && npm install && npm run dev
 # Vite dev server proxies /api → http://localhost:8000.
-# Set X-Auth-Request-Email manually in browser devtools, or run behind oauth2-proxy.
+# Sign in via MSAL: the dev server uses the same Entra app registration as prod
+# (redirect URI registered for https://tank.romaine.life/), so you'll need to
+# either tunnel localhost behind that hostname or add a dev redirect URI.
 ```
 
 ## Deploy
@@ -39,5 +41,8 @@ cd frontend && npm install && npm run dev
 ArgoCD auto-syncs `k8s/` when changes hit `main`. Image is built and pushed to
 `romainecr.azurecr.io/tank-operator:<sha>` (and `:latest`) by `.github/workflows/build.yml`.
 
-Auth is provided by oauth2-proxy in front (out of scope for this chart in Phase 1); the
-backend reads `X-Auth-Request-Email` and scopes Jobs by SHA-256 hash of that header.
+Auth: the SPA uses MSAL.js to obtain an Entra ID token, POSTs it to
+`/api/auth/microsoft/login`, and the backend mints its own short-lived JWT
+(see [auth.py](backend/src/tank_operator/auth.py)). Sessions are scoped by
+SHA-256 of the signed-in user's email. Allowlist is the comma-separated
+`ALLOWED_EMAILS` env var, sourced from KV via ExternalSecret.

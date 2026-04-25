@@ -46,7 +46,8 @@ externalSecret:
         kvKey: github-app-private-key
   # Auth secrets for the orchestrator's MSAL → backend JWT flow. ENTRA_CLIENT_ID
   # is the audience for verifying Entra ID tokens; JWT_SECRET signs the backend's
-  # own session tokens; ALLOWED_EMAIL gates which signed-in user can use the app.
+  # own session tokens; ALLOWED_EMAILS (comma-separated) gates which signed-in
+  # users can use the app.
   auth:
     secretName: tank-operator-auth
     keys:
@@ -54,5 +55,5 @@ externalSecret:
         kvKey: tank-operator-oauth-client-id
       - envVar: JWT_SECRET
         kvKey: tank-operator-jwt-secret
-      - envVar: ALLOWED_EMAIL
-        kvKey: tank-operator-oauth-allowed-email
+      - envVar: ALLOWED_EMAILS
+        kvKey: tank-operator-oauth-allowed-emails

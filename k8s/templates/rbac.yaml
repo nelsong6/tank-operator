@@ -1,5 +1,5 @@
-# Orchestrator (running as `infra-shared` SA in tank-operator ns) needs to manage Jobs and
-# pods/exec in the sessions namespace.
+# Orchestrator (running as the `tank-operator` SA in the tank-operator ns) needs to manage
+# Jobs and pods/exec in the sessions namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

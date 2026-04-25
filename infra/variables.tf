@@ -21,13 +21,16 @@ variable "key_vault_resource_group" {
 }
 
 variable "hostname" {
-  description = "Public hostname of the tank-operator frontend; oauth2-proxy redirect URI is derived from this."
+  description = "Public hostname of the tank-operator frontend; the MSAL.js redirect URI is derived from this."
   type        = string
   default     = "tank.romaine.life"
 }
 
-variable "allowed_email" {
-  description = "Email address allowed to authenticate via oauth2-proxy."
-  type        = string
-  default     = "nelson-devops-project@outlook.com"
+variable "allowed_emails" {
+  description = "Email addresses allowed to authenticate. Joined with commas and stored in KV; backend parses on startup."
+  type        = list(string)
+  default = [
+    "nelson-devops-project@outlook.com",
+    "Brenden.owens39@gmail.com",
+  ]
 }

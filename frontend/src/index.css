@@ -133,7 +133,7 @@ button:disabled {
 .terminal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.75rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid #2a2a2f;
   font-family: ui-monospace, "Cascadia Code", monospace;
@@ -142,10 +142,21 @@ button:disabled {
 
 .terminal-id {
   color: #aaa;
+  flex: 1;
 }
 
 .terminal-body {
   flex: 1;
   padding: 0.5rem;
   overflow: hidden;
+}
+
+.terminal-waiting {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.9rem;
 }

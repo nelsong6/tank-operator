@@ -22,7 +22,7 @@ resource "azuread_application" "oauth" {
   display_name = "tank-operator-oauth"
   # Personal MSA accounts (e.g. outlook.com) need this; AzureADMyOrg-only apps
   # rejected by the consumer auth flow with `unauthorized_client`. Sign-in is
-  # still gated by the backend's ALLOWED_EMAIL allowlist.
+  # still gated by the backend's ALLOWED_EMAILS allowlist.
   sign_in_audience = "AzureADandPersonalMicrosoftAccount"
 
   owners = [data.azuread_client_config.current.object_id]
@@ -76,8 +76,10 @@ resource "azurerm_key_vault_secret" "jwt_secret" {
   key_vault_id = data.azurerm_key_vault.kv.id
 }
 
-resource "azurerm_key_vault_secret" "oauth_allowed_email" {
-  name         = "tank-operator-oauth-allowed-email"
-  value        = var.allowed_email
+resource "azurerm_key_vault_secret" "oauth_allowed_emails" {
+  name         = "tank-operator-oauth-allowed-emails"
+  # Comma-joined list — the backend splits on `,` and lowercases. KV secrets
+  # are flat strings, so this is the simplest stable encoding.
+  value        = join(",", var.allowed_emails)
   key_vault_id = data.azurerm_key_vault.kv.id
 }

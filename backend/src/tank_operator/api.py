@@ -111,6 +111,10 @@ async def delete_session(session_id: str, user: User = Depends(current_user)) ->
 
 @app.websocket("/api/sessions/{session_id}/exec")
 async def session_exec(ws: WebSocket, session_id: str) -> None:
+    # Accept up front so we can send a close frame the browser can read
+    # (`reason` is dropped by Starlette/most browsers when close is called
+    # before accept — the tab just sees code 1006, no detail).
+    await ws.accept()
     try:
         user = current_user_ws(ws)
     except HTTPException as e:
@@ -129,7 +133,6 @@ async def session_exec(ws: WebSocket, session_id: str) -> None:
         await ws.close(code=status.WS_1011_INTERNAL_ERROR, reason="pod not ready")
         return
 
-    await ws.accept()
     try:
         await bridge(ws, namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
     except WebSocketDisconnect:

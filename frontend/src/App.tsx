@@ -52,6 +52,10 @@ export function App() {
       if (!res.ok) throw new Error(`create failed: ${res.status}`);
       const created: Session = await res.json();
       await refresh();
+      // The Job is created Pending and stays so until the kubelet pulls the
+      // image and starts the container. Opening the WS before then races
+      // get_pod_name's readiness wait — surface a "starting" state and
+      // poll until the backend reports Active.
       setActive(created.id);
     } catch (e) {
       setError(String(e));
@@ -89,7 +93,15 @@ export function App() {
   }
 
   if (active) {
-    return <Terminal sessionId={active} onClose={() => setActive(null)} />;
+    const session = sessions.find((s) => s.id === active);
+    return (
+      <Terminal
+        sessionId={active}
+        status={session?.status ?? "Pending"}
+        onClose={() => setActive(null)}
+        onPoll={refresh}
+      />
+    );
   }
 
   return (

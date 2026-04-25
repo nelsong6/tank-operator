@@ -138,7 +138,7 @@ class SessionManager:
             for j in jobs.items
         ]
 
-    async def get_pod_name(self, owner: str, session_id: str, timeout: float = 30.0) -> str:
+    async def get_pod_name(self, owner: str, session_id: str, timeout: float = 90.0) -> str:
         """Look up the pod backing a session, waiting up to `timeout` seconds for it to be Running."""
         assert self._batch is not None and self._core is not None
         owner_label = _owner_label(owner)

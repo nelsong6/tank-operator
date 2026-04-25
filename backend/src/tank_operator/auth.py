@@ -9,8 +9,9 @@
 5. Subsequent calls go through `current_user` which verifies the self-signed
    JWT off the Authorization header (REST) or `auth_token` cookie (WebSocket).
 
-Allowed-email gating is done once at /api/auth/microsoft/login — only the
-configured ALLOWED_EMAIL gets a session token; everyone else gets 403.
+Allowed-email gating is done once at /api/auth/microsoft/login — only emails
+in the configured ALLOWED_EMAILS allowlist get a session token; everyone else
+gets 403.
 """
 from __future__ import annotations
 
@@ -27,7 +28,9 @@ from jwt import PyJWKClient
 
 ENTRA_CLIENT_ID = os.environ.get("ENTRA_CLIENT_ID", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
-ALLOWED_EMAIL = os.environ.get("ALLOWED_EMAIL", "").lower()
+ALLOWED_EMAILS = frozenset(
+    e.strip().lower() for e in os.environ.get("ALLOWED_EMAILS", "").split(",") if e.strip()
+)
 
 # Match kill-me's posture: `common` JWKS endpoint, regex issuer match. Lets
 # any Microsoft user attempt to sign in; the email allowlist is the gate.
@@ -78,8 +81,8 @@ async def exchange_microsoft_token(id_token: str) -> tuple[str, User]:
     """
     if not JWT_SECRET:
         raise HTTPException(status_code=500, detail="JWT_SECRET not configured")
-    if not ALLOWED_EMAIL:
-        raise HTTPException(status_code=500, detail="ALLOWED_EMAIL not configured")
+    if not ALLOWED_EMAILS:
+        raise HTTPException(status_code=500, detail="ALLOWED_EMAILS not configured")
 
     # Offload the (sync, network-bound) JWKS fetch + verify so we don't block the loop.
     payload = await asyncio.to_thread(_verify_entra_id_token, id_token)
@@ -87,7 +90,7 @@ async def exchange_microsoft_token(id_token: str) -> tuple[str, User]:
     email = (payload.get("email") or payload.get("preferred_username") or "").lower()
     if not email:
         raise HTTPException(status_code=401, detail="token has no email or preferred_username claim")
-    if email != ALLOWED_EMAIL:
+    if email not in ALLOWED_EMAILS:
         raise HTTPException(status_code=403, detail="email not allowed")
 
     user = User(
@@ -118,7 +121,7 @@ def _decode_session_token(token: str) -> User:
     except jwt.PyJWTError as e:
         raise HTTPException(status_code=401, detail=f"invalid session token: {e}") from e
     email = str(payload.get("email", "")).lower()
-    if email != ALLOWED_EMAIL:
+    if email not in ALLOWED_EMAILS:
         # Allowlist may have changed since the token was issued; reject stale sessions.
         raise HTTPException(status_code=403, detail="email no longer allowed")
     return User(sub=str(payload["sub"]), email=email, name=str(payload.get("name", "")))
