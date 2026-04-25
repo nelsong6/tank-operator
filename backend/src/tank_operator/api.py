@@ -3,10 +3,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
 from .exec_proxy import bridge
 from .sessions import (
     SESSIONS_NAMESPACE,
@@ -32,10 +34,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan)
 
 
-def _user(email: str | None) -> str:
-    if not email:
-        raise HTTPException(status_code=401, detail="missing X-Auth-Request-Email")
-    return email
+class LoginBody(BaseModel):
+    credential: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+    user: dict[str, str]
 
 
 @app.get("/healthz")
@@ -43,27 +48,60 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/config")
+async def config() -> dict[str, str]:
+    """Public auth config consumed by the frontend to bootstrap MSAL."""
+    return {
+        "entra_client_id": os.environ.get("ENTRA_CLIENT_ID", ""),
+        "entra_authority": "https://login.microsoftonline.com/common",
+    }
+
+
+@app.post("/api/auth/microsoft/login", response_model=LoginResponse)
+async def microsoft_login(body: LoginBody, request: Request) -> JSONResponse:
+    session_token, user = await exchange_microsoft_token(body.credential)
+    secure = request.url.scheme == "https"
+    response = JSONResponse(
+        {"token": session_token, "user": {"sub": user.sub, "email": user.email, "name": user.name}}
+    )
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=session_token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def logout() -> JSONResponse:
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/api/auth/me", response_model=dict)
+async def me(user: User = Depends(current_user)) -> dict[str, str]:
+    return {"sub": user.sub, "email": user.email, "name": user.name}
+
+
 @app.post("/api/sessions")
-async def create_session(
-    x_auth_request_email: str | None = Header(default=None),
-) -> SessionInfo:
-    return await sessions.create(owner=_user(x_auth_request_email))
+async def create_session(user: User = Depends(current_user)) -> SessionInfo:
+    return await sessions.create(owner=user.email)
 
 
 @app.get("/api/sessions")
-async def list_sessions(
-    x_auth_request_email: str | None = Header(default=None),
-) -> list[SessionInfo]:
-    return await sessions.list(owner=_user(x_auth_request_email))
+async def list_sessions(user: User = Depends(current_user)) -> list[SessionInfo]:
+    return await sessions.list(owner=user.email)
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(
-    session_id: str,
-    x_auth_request_email: str | None = Header(default=None),
-) -> dict[str, str]:
+async def delete_session(session_id: str, user: User = Depends(current_user)) -> dict[str, str]:
     try:
-        await sessions.delete(owner=_user(x_auth_request_email), session_id=session_id)
+        await sessions.delete(owner=user.email, session_id=session_id)
     except SessionNotFound:
         raise HTTPException(status_code=404, detail="session not found")
     except SessionNotOwned:
@@ -73,13 +111,14 @@ async def delete_session(
 
 @app.websocket("/api/sessions/{session_id}/exec")
 async def session_exec(ws: WebSocket, session_id: str) -> None:
-    email = ws.headers.get("x-auth-request-email")
-    if not email:
-        await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="missing X-Auth-Request-Email")
+    try:
+        user = current_user_ws(ws)
+    except HTTPException as e:
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason=e.detail)
         return
 
     try:
-        pod_name = await sessions.get_pod_name(owner=email, session_id=session_id)
+        pod_name = await sessions.get_pod_name(owner=user.email, session_id=session_id)
     except SessionNotOwned:
         await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="not owner")
         return

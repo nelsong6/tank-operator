@@ -37,6 +37,9 @@ spec:
               value: {{ .Values.session.ttlSecondsAfterFinished | quote }}
             - name: TANK_OPERATOR_STATIC_DIR
               value: /app/static
+          envFrom:
+            - secretRef:
+                name: {{ .Values.externalSecret.auth.secretName }}
           readinessProbe:
             httpGet:
               path: /healthz

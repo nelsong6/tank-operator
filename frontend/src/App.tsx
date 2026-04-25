@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Terminal } from "./Terminal";
+import { authedFetch, bootstrapAuth, logout } from "./auth";
 
 interface Session {
   id: string;
@@ -8,15 +9,29 @@ interface Session {
   status: string;
 }
 
+interface SessionUser {
+  sub: string;
+  email: string;
+  name: string;
+}
+
 export function App() {
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<string | null>(null);
 
+  useEffect(() => {
+    bootstrapAuth()
+      .then(setUser)
+      .catch((e) => setAuthError(String(e)));
+  }, []);
+
   async function refresh() {
     try {
-      const res = await fetch("/api/sessions");
+      const res = await authedFetch("/api/sessions");
       if (!res.ok) throw new Error(`list failed: ${res.status}`);
       setSessions(await res.json());
       setError(null);
@@ -26,14 +41,14 @@ export function App() {
   }
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    if (user) void refresh();
+  }, [user]);
 
   async function createSession() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/sessions", { method: "POST" });
+      const res = await authedFetch("/api/sessions", { method: "POST" });
       if (!res.ok) throw new Error(`create failed: ${res.status}`);
       const created: Session = await res.json();
       await refresh();
@@ -47,13 +62,30 @@ export function App() {
 
   async function deleteSession(id: string) {
     try {
-      const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+      const res = await authedFetch(`/api/sessions/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`delete failed: ${res.status}`);
       if (active === id) setActive(null);
       await refresh();
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  if (authError) {
+    return (
+      <div className="app">
+        <pre className="error">auth error: {authError}</pre>
+        <button onClick={() => location.reload()}>retry</button>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="app">
+        <p style={{ color: "#777" }}>signing in…</p>
+      </div>
+    );
   }
 
   if (active) {
@@ -64,9 +96,11 @@ export function App() {
     <div className="app">
       <header>
         <h1>tank-operator</h1>
-        <button onClick={createSession} disabled={busy}>
-          + new session
-        </button>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <span style={{ color: "#888", fontSize: "0.85rem" }}>{user.email}</span>
+          <button onClick={createSession} disabled={busy}>+ new session</button>
+          <button onClick={logout}>sign out</button>
+        </div>
       </header>
       {error && <pre className="error">{error}</pre>}
       <ul className="sessions">

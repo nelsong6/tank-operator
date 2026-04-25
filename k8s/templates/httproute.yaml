@@ -22,6 +22,6 @@ spec:
       backendRefs:
         - group: ""
           kind: Service
-          name: oauth2-proxy
+          name: tank-operator
           port: 80
           weight: 1
