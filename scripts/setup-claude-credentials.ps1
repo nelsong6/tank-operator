@@ -1,20 +1,25 @@
-# Stash an Anthropic API key in Azure Key Vault so session pods can launch
-# claude CLI fully authenticated (TUI + all features).
+# Stash a claude.ai subscription credentials blob in Azure Key Vault so session
+# pods can launch the claude TUI fully authenticated against the user's
+# subscription (no API-credit burn).
 #
-# We use ANTHROPIC_API_KEY rather than the OAuth subscription path
-# (CLAUDE_CODE_OAUTH_TOKEN) because the env-var token is "inference-only"
-# and the full OAuth flow assumes a browser on the same machine — neither
-# fits a headless container.
+# We use the full ~/.claude/.credentials.json (with `user:sessions:claude_code`
+# scope) rather than ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN: API keys
+# bill API credits, and the env-var OAuth path is "inference-only" — only the
+# credentials file satisfies the interactive TUI.
+#
+# To get the JSON: in WSL (or any Linux shell) where claude is installed, run
+# `claude /login`, complete the browser flow, then `cat ~/.claude/.credentials.json`.
+# Paste the entire blob (single line) into this script.
 #
 # Run on rotation. The script force-syncs the ExternalSecret so new session
 # pods pick up the value immediately (no waiting on the 1h ESO poll).
 #
-# Usage:  .\scripts\setup-anthropic-key.ps1
+# Usage:  .\scripts\setup-claude-credentials.ps1
 
 $ErrorActionPreference = 'Stop'
 
 $Vault         = if ($env:VAULT)          { $env:VAULT }          else { 'romaine-kv' }
-$KvSecretName  = 'anthropic-api-key'
+$KvSecretName  = 'claude-credentials-json'
 $EsoNamespace  = if ($env:ESO_NAMESPACE)  { $env:ESO_NAMESPACE }  else { 'tank-operator-sessions' }
 $EsoName       = if ($env:ESO_NAME)       { $env:ESO_NAME }       else { 'github-app-creds' }
 
@@ -27,22 +32,31 @@ Require-Cmd az
 Require-Cmd kubectl
 
 Write-Host @'
-Storing your Anthropic API key in Azure Key Vault.
+Storing your claude.ai subscription credentials in Azure Key Vault.
 
-Get a key at https://console.anthropic.com/settings/keys (starts with `sk-ant-api...`).
-Paste it below — input is hidden.
+In WSL (or any Linux shell) where claude is installed:
+    claude /login          # complete the browser flow
+    cat ~/.claude/.credentials.json
+
+Paste the entire JSON blob below — input is hidden.
 '@
 
-$secure = Read-Host -Prompt "`nPaste API key" -AsSecureString
+$secure = Read-Host -Prompt "`nPaste credentials JSON" -AsSecureString
 $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try {
-    $Token = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    $Blob = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
 } finally {
     [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
 }
 
-if ([string]::IsNullOrWhiteSpace($Token)) {
+if ([string]::IsNullOrWhiteSpace($Blob)) {
     Write-Error "empty value, aborting"
+}
+try {
+    $parsed = $Blob | ConvertFrom-Json
+    if (-not $parsed.claudeAiOauth.refreshToken) { throw "missing .claudeAiOauth.refreshToken" }
+} catch {
+    Write-Error "input doesn't look like a credentials.json: $_"
 }
 
 Write-Host ""
@@ -50,7 +64,7 @@ Write-Host "-> Writing Key Vault secret $Vault/$KvSecretName ..."
 az keyvault secret set `
     --vault-name $Vault `
     --name $KvSecretName `
-    --value $Token `
+    --value $Blob `
     --output none
 if ($LASTEXITCODE -ne 0) { Write-Error "az keyvault secret set failed" }
 
@@ -61,7 +75,8 @@ if ($LASTEXITCODE -ne 0) { Write-Error "kubectl annotate failed" }
 
 Write-Host @'
 
-Key stored. Newly created sessions will see ANTHROPIC_API_KEY in their env.
+Credentials stored. Newly created sessions will see CLAUDE_CREDENTIALS_JSON
+in their env, and the bootstrap drops it at /root/.claude/.credentials.json.
 
 Note: pods that are already running will NOT pick up the new value (env vars
 are captured at pod creation). Click the 'x' on the session tile to kill it,

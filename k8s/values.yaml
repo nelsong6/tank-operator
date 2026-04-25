@@ -40,11 +40,12 @@ externalSecret:
   refreshInterval: 1h
   # Aggregate of env vars the session container needs at startup. The github-*
   # keys are read by the github MCP server inside claude-container (same names
-  # as mcp-github). ANTHROPIC_API_KEY makes the claude CLI's TUI launch fully
-  # authenticated — the OAuth subscription path is browser-coupled and the
-  # CLAUDE_CODE_OAUTH_TOKEN env var path is "inference-only", so an API key is
-  # the only friction-free option for headless containerized sessions.
-  # Populate via scripts/setup-anthropic-key.ps1 (or .sh).
+  # as mcp-github). CLAUDE_CREDENTIALS_JSON is the full ~/.claude/.credentials.json
+  # blob from `claude /login` — the bootstrap drops it on disk so the TUI launches
+  # against the user's claude.ai subscription (no API-credit burn). The env-var-only
+  # CLAUDE_CODE_OAUTH_TOKEN path is "inference-only" and won't satisfy the TUI;
+  # the credentials file with `user:sessions:claude_code` scope does.
+  # Populate via scripts/setup-claude-credentials.ps1 (or .sh).
   githubApp:
     secretName: github-app-creds
     keys:
@@ -54,8 +55,8 @@ externalSecret:
         kvKey: github-app-installation-id
       - envVar: GITHUB_APP_PRIVATE_KEY
         kvKey: github-app-private-key
-      - envVar: ANTHROPIC_API_KEY
-        kvKey: anthropic-api-key
+      - envVar: CLAUDE_CREDENTIALS_JSON
+        kvKey: claude-credentials-json
   # Auth secrets for the orchestrator's MSAL → backend JWT flow. ENTRA_CLIENT_ID
   # is the audience for verifying Entra ID tokens; JWT_SECRET signs the backend's
   # own session tokens; ALLOWED_EMAILS (comma-separated) gates which signed-in
