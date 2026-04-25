@@ -24,7 +24,11 @@ from kubernetes_asyncio.stream import WsApiClient
 
 log = logging.getLogger(__name__)
 
-EXEC_COMMAND = ["/bin/bash"]
+# Launch claude as the entry point. CLAUDE_CODE_OAUTH_TOKEN (mounted into the
+# pod via ExternalSecret) makes it use the user's subscription. If claude
+# exits we drop into bash so the user keeps a usable shell rather than the
+# session immediately closing.
+EXEC_COMMAND = ["bash", "-lc", "claude; exec bash"]
 
 STDIN_CHANNEL = 0
 STDOUT_CHANNEL = 1
