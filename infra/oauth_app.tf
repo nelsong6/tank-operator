@@ -27,6 +27,12 @@ resource "azuread_application" "oauth" {
 
   owners = [data.azuread_client_config.current.object_id]
 
+  # v2 access tokens are required when sign_in_audience includes
+  # PersonalMicrosoftAccount; absent this block, tofu refuses to plan.
+  api {
+    requested_access_token_version = 2
+  }
+
   # SPA platform — MSAL.js auth-code-with-PKCE flow, no client secret.
   single_page_application {
     redirect_uris = [
