@@ -16,7 +16,6 @@ SESSIONS_NAMESPACE = os.environ.get("SESSIONS_NAMESPACE", "tank-operator-session
 SESSION_IMAGE = os.environ.get("SESSION_IMAGE", "romainecr.azurecr.io/claude-container:latest")
 SESSION_SERVICE_ACCOUNT = os.environ.get("SESSION_SERVICE_ACCOUNT", "claude-session")
 GITHUB_APP_SECRET = os.environ.get("GITHUB_APP_SECRET", "github-app-creds")
-SESSION_TTL_SECONDS = int(os.environ.get("SESSION_TTL_SECONDS", "60"))
 # Reaper config: a session with no open WS for IDLE_TIMEOUT_SECONDS gets
 # deleted by the periodic sweep. The 5-min default gives a comfortable
 # window for tab reloads / brief network blips while still honoring the
@@ -55,9 +54,18 @@ def _owner_label(email: str) -> str:
 
 
 class SessionManager:
+    """Manages session lifecycle as one Deployment per session.
+
+    Deployment was chosen over Job because the workload is long-running until
+    explicitly killed (claude CLI inside `sleep infinity`); Jobs are batch
+    primitives. Bonus: ArgoCD's resource tree renders Deployments richly
+    (ReplicaSet → Pod with health rollup), Jobs do not — useful once we
+    surface the sessions namespace as orphaned resources.
+    """
+
     def __init__(self) -> None:
         self._api: client.ApiClient | None = None
-        self._batch: client.BatchV1Api | None = None
+        self._apps: client.AppsV1Api | None = None
         self._core: client.CoreV1Api | None = None
         # In-memory connection tracking for the idle reaper. Single replica
         # only (values.yaml pins replicas: 1) — stateful, restart-tolerant
@@ -72,7 +80,7 @@ class SessionManager:
         except config.ConfigException:
             await config.load_kube_config()
         self._api = client.ApiClient()
-        self._batch = client.BatchV1Api(self._api)
+        self._apps = client.AppsV1Api(self._api)
         self._core = client.CoreV1Api(self._api)
         self._reaper_task = asyncio.create_task(self._reaper_loop())
 
@@ -84,11 +92,12 @@ class SessionManager:
         if self._api is not None:
             await self._api.close()
 
-    def _job_manifest(self, session_id: str, owner: str) -> dict[str, Any]:
+    def _deployment_manifest(self, session_id: str, owner: str) -> dict[str, Any]:
         owner_label = _owner_label(owner)
+        selector_labels = {"tank-operator/session-id": session_id}
         return {
-            "apiVersion": "batch/v1",
-            "kind": "Job",
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
             "metadata": {
                 "name": f"session-{session_id}",
                 "namespace": SESSIONS_NAMESPACE,
@@ -102,8 +111,11 @@ class SessionManager:
                 },
             },
             "spec": {
-                "ttlSecondsAfterFinished": SESSION_TTL_SECONDS,
-                "backoffLimit": 0,
+                "replicas": 1,
+                # No old ReplicaSets — this Deployment is never updated, only
+                # created and deleted, so history is just clutter in Argo.
+                "revisionHistoryLimit": 0,
+                "selector": {"matchLabels": selector_labels},
                 "template": {
                     "metadata": {
                         "labels": {
@@ -114,7 +126,6 @@ class SessionManager:
                         },
                     },
                     "spec": {
-                        "restartPolicy": "Never",
                         "serviceAccountName": SESSION_SERVICE_ACCOUNT,
                         "containers": [
                             {
@@ -135,11 +146,11 @@ class SessionManager:
         }
 
     async def create(self, owner: str) -> SessionInfo:
-        assert self._batch is not None
+        assert self._apps is not None
         session_id = uuid.uuid4().hex[:10]
-        await self._batch.create_namespaced_job(
+        await self._apps.create_namespaced_deployment(
             namespace=SESSIONS_NAMESPACE,
-            body=self._job_manifest(session_id, owner),
+            body=self._deployment_manifest(session_id, owner),
         )
         # Seed activity so the reaper gives the session a full IDLE_TIMEOUT
         # to receive its first WS before being eligible for deletion.
@@ -148,34 +159,36 @@ class SessionManager:
         return SessionInfo(id=session_id, pod_name=None, owner=owner, status="Pending")
 
     async def list(self, owner: str) -> list[SessionInfo]:
-        assert self._batch is not None
+        assert self._apps is not None
         owner_label = _owner_label(owner)
-        jobs = await self._batch.list_namespaced_job(
+        deployments = await self._apps.list_namespaced_deployment(
             namespace=SESSIONS_NAMESPACE,
             label_selector=f"tank-operator/owner={owner_label}",
         )
         return [
             SessionInfo(
-                id=j.metadata.labels.get("tank-operator/session-id", j.metadata.name),
+                id=d.metadata.labels.get("tank-operator/session-id", d.metadata.name),
                 pod_name=None,
                 owner=owner,
-                status=_job_status(j),
+                status=_deployment_status(d),
             )
-            for j in jobs.items
+            for d in deployments.items
         ]
 
     async def get_pod_name(self, owner: str, session_id: str, timeout: float = 90.0) -> str:
-        """Look up the pod backing a session, waiting up to `timeout` seconds for it to be Running."""
-        assert self._batch is not None and self._core is not None
+        """Look up the pod backing a session, waiting up to `timeout` seconds for it to be Ready."""
+        assert self._apps is not None and self._core is not None
         owner_label = _owner_label(owner)
         name = f"session-{session_id}"
         try:
-            job = await self._batch.read_namespaced_job(name=name, namespace=SESSIONS_NAMESPACE)
+            deployment = await self._apps.read_namespaced_deployment(
+                name=name, namespace=SESSIONS_NAMESPACE
+            )
         except client.ApiException as e:
             if e.status == 404:
                 raise SessionNotFound(session_id) from e
             raise
-        if job.metadata.labels.get("tank-operator/owner") != owner_label:
+        if deployment.metadata.labels.get("tank-operator/owner") != owner_label:
             raise SessionNotOwned(session_id)
 
         deadline = asyncio.get_event_loop().time() + timeout
@@ -185,24 +198,26 @@ class SessionManager:
                 label_selector=f"tank-operator/session-id={session_id}",
             )
             for pod in pods.items:
-                if pod.status and pod.status.phase == "Running":
+                if _pod_ready(pod):
                     return pod.metadata.name
             await asyncio.sleep(1)
         raise PodNotReady(session_id)
 
     async def delete(self, owner: str, session_id: str) -> None:
-        assert self._batch is not None
+        assert self._apps is not None
         owner_label = _owner_label(owner)
         name = f"session-{session_id}"
         try:
-            job = await self._batch.read_namespaced_job(name=name, namespace=SESSIONS_NAMESPACE)
+            deployment = await self._apps.read_namespaced_deployment(
+                name=name, namespace=SESSIONS_NAMESPACE
+            )
         except client.ApiException as e:
             if e.status == 404:
                 raise SessionNotFound(session_id) from e
             raise
-        if job.metadata.labels.get("tank-operator/owner") != owner_label:
+        if deployment.metadata.labels.get("tank-operator/owner") != owner_label:
             raise SessionNotOwned(session_id)
-        await self._batch.delete_namespaced_job(
+        await self._apps.delete_namespaced_deployment(
             name=name,
             namespace=SESSIONS_NAMESPACE,
             propagation_policy="Foreground",
@@ -237,14 +252,14 @@ class SessionManager:
                 log.exception("reaper sweep failed")
 
     async def _reap_idle(self) -> None:
-        assert self._batch is not None
+        assert self._apps is not None
         now = time.monotonic()
-        jobs = await self._batch.list_namespaced_job(
+        deployments = await self._apps.list_namespaced_deployment(
             namespace=SESSIONS_NAMESPACE,
             label_selector="app.kubernetes.io/managed-by=tank-operator",
         )
-        for job in jobs.items:
-            session_id = job.metadata.labels.get("tank-operator/session-id")
+        for d in deployments.items:
+            session_id = d.metadata.labels.get("tank-operator/session-id")
             if not session_id:
                 continue
             if self._ws_count.get(session_id, 0) > 0:
@@ -262,8 +277,8 @@ class SessionManager:
                 continue
             log.info("reaping idle session %s (idle %.0fs)", session_id, now - last)
             try:
-                await self._batch.delete_namespaced_job(
-                    name=job.metadata.name,
+                await self._apps.delete_namespaced_deployment(
+                    name=d.metadata.name,
                     namespace=SESSIONS_NAMESPACE,
                     propagation_policy="Foreground",
                 )
@@ -274,13 +289,28 @@ class SessionManager:
             self._activity.pop(session_id, None)
 
 
-def _job_status(job: Any) -> str:
-    if job.status is None:
+def _deployment_status(deployment: Any) -> str:
+    """Map a Deployment's status to the same vocabulary the frontend already uses."""
+    status = deployment.status
+    if status is None:
         return "Pending"
-    if job.status.active:
+    ready = status.ready_replicas or 0
+    if ready >= 1:
         return "Active"
-    if job.status.succeeded:
-        return "Succeeded"
-    if job.status.failed:
-        return "Failed"
+    if status.conditions:
+        for c in status.conditions:
+            # ReplicaFailure or Progressing=False with reason ProgressDeadlineExceeded
+            # both indicate the rollout has given up. Treat as Failed so the UI
+            # shows red and the user can delete + retry.
+            if c.type == "ReplicaFailure" and c.status == "True":
+                return "Failed"
+            if c.type == "Progressing" and c.status == "False":
+                return "Failed"
     return "Pending"
+
+
+def _pod_ready(pod: Any) -> bool:
+    if not pod.status or pod.status.phase != "Running":
+        return False
+    statuses = pod.status.container_statuses or []
+    return bool(statuses) and all(cs.ready for cs in statuses)

@@ -1,13 +1,15 @@
 # Orchestrator (running as the `tank-operator` SA in the tank-operator ns) needs to manage
-# Jobs and pods/exec in the sessions namespace.
+# Deployments and pods/exec in the sessions namespace. (Was Jobs; switched so ArgoCD's
+# resource tree shows session pods richly and the workload semantics are correct —
+# long-running until killed, not batch.)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: tank-operator-sessions-mgr
   namespace: {{ .Values.namespaces.sessions }}
 rules:
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: [""]
     resources: ["pods"]
