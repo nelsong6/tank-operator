@@ -32,5 +32,6 @@ variable "allowed_emails" {
   default = [
     "nelson-devops-project@outlook.com",
     "Brenden.owens39@gmail.com",
+    "gantonski@gmail.com",
   ]
 }
