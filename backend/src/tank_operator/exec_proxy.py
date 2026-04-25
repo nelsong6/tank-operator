@@ -26,13 +26,16 @@ log = logging.getLogger(__name__)
 
 # Pre-seed claude's first-run state so a fresh pod boots straight to the chat
 # prompt — no theme picker, no "trust this folder?", no "approve this API key?",
-# no MCP marketplace prompt. The state lives in two files:
+# no MCP marketplace prompt, no "approve project MCP servers?". State lives in:
 #   ~/.claude/settings.json       — theme
 #   ~/.claude.json                — onboarding flag + API-key trust list
 #                                   (claude keys off the last 20 chars; we
 #                                   include 22 too in case that flips back) +
 #                                   per-project trust for /workspace +
-#                                   official-marketplace auto-install flags
+#                                   official-marketplace auto-install flags +
+#                                   pre-approved set of project-level MCP
+#                                   servers (read from /workspace/.mcp.json so
+#                                   it stays correct as the image evolves)
 # Then exec claude. If claude exits we drop into bash so the WS stays useful.
 _BOOTSTRAP_SH = r"""
 mkdir -p /root/.claude
@@ -41,6 +44,10 @@ cat > /root/.claude/settings.json <<'EOF'
 EOF
 last20="${ANTHROPIC_API_KEY: -20}"
 last22="${ANTHROPIC_API_KEY: -22}"
+mcp_enabled='[]'
+if [ -f /workspace/.mcp.json ]; then
+  mcp_enabled="$(jq -c '.mcpServers | keys' /workspace/.mcp.json)"
+fi
 cat > /root/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
@@ -52,7 +59,7 @@ cat > /root/.claude.json <<EOF
       "allowedTools": [],
       "mcpContextUris": [],
       "mcpServers": {},
-      "enabledMcpjsonServers": [],
+      "enabledMcpjsonServers": ${mcp_enabled},
       "disabledMcpjsonServers": [],
       "hasTrustDialogAccepted": true,
       "projectOnboardingSeenCount": 1,
