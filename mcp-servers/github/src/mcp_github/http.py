@@ -15,6 +15,7 @@ import os
 from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
@@ -33,7 +34,21 @@ def _req(name: str) -> str:
 
 
 def build_app() -> Starlette:
-    mcp = FastMCP("github-mcp", stateless_http=True)
+    # The streamable_http transport ships a DNS-rebinding-protection middleware
+    # that 421s any Host header not in `allowed_hosts`. Default whitelist only
+    # covers localhost, so in-cluster requests to mcp-github.mcp-github.svc get
+    # rejected. Disable here — kube-rbac-proxy in front of this process already
+    # gates auth via K8s SA tokens, so DNS rebinding can't reach an unauthorized
+    # caller anyway. Set streamable_http_path to "/" so requests POSTed to "/"
+    # don't hit Starlette's trailing-slash redirect (was 307 → 421 loop).
+    mcp = FastMCP(
+        "github-mcp",
+        stateless_http=True,
+        streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False,
+        ),
+    )
     gh = GitHubClient(GitHubAppTokenMinter(
         _req("GITHUB_APP_ID"),
         _req("GITHUB_APP_INSTALLATION_ID"),
