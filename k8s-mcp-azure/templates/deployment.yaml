@@ -5,6 +5,12 @@ metadata:
   namespace: mcp-azure
 spec:
   replicas: 1
+  # Single-node B2s_v2 cluster has no headroom for the rolling-update default
+  # (maxSurge=1 keeps both old + new alive briefly, which doesn't fit). Recreate
+  # tears down the old pod first, then brings up the new one — brief
+  # unavailability is fine for an internal MCP server with one consumer.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mcp-azure

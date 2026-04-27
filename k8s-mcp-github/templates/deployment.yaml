@@ -5,6 +5,10 @@ metadata:
   namespace: mcp-github
 spec:
   replicas: 1
+  # Same reason as mcp-azure: single-node cluster can't fit two replicas during
+  # a rolling-update surge. Recreate keeps the rollout unstuck.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mcp-github
