@@ -43,7 +43,7 @@ export function Terminal({ sessionId, status, visible }: Props) {
     // and matches plain http(s) links + OSC 8 hyperlinks. Open in a new tab so
     // the workspace session isn't navigated away from.
     term.loadAddon(
-      new WebLinksAddon((event, uri) => {
+      new WebLinksAddon((_event, uri) => {
         window.open(uri, "_blank", "noopener,noreferrer");
       }),
     );
