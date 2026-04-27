@@ -43,7 +43,7 @@ class PodNotReady(Exception):
 
 
 SESSION_MODES = ("api_key", "subscription")
-DEFAULT_SESSION_MODE = "api_key"
+DEFAULT_SESSION_MODE = "subscription"
 
 
 @dataclass

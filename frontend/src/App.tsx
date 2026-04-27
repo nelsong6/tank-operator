@@ -108,7 +108,7 @@ export function App() {
     });
   }
 
-  async function createSession(mode: SessionMode = "api_key") {
+  async function createSession(mode: SessionMode = "subscription") {
     setBusy(true);
     setModeMenuOpen(false);
     setError(null);
@@ -161,9 +161,9 @@ export function App() {
           <div className={`split-button ${modeMenuOpen ? "open" : ""}`}>
             <button
               className="split-main"
-              onClick={() => createSession("api_key")}
+              onClick={() => createSession("subscription")}
               disabled={busy}
-              title="new session (API key)"
+              title="new session (subscription)"
             >
               + new
             </button>
@@ -179,15 +179,15 @@ export function App() {
             {modeMenuOpen && (
               <ul className="split-menu" role="menu">
                 <li>
-                  <button onClick={() => createSession("api_key")} disabled={busy}>
-                    {MODE_LABELS.api_key}
-                    <span className="hint">default · billed via API</span>
+                  <button onClick={() => createSession("subscription")} disabled={busy}>
+                    {MODE_LABELS.subscription}
+                    <span className="hint">default · uses claude.ai login</span>
                   </button>
                 </li>
                 <li>
-                  <button onClick={() => createSession("subscription")} disabled={busy}>
-                    {MODE_LABELS.subscription}
-                    <span className="hint">beta · uses claude.ai login</span>
+                  <button onClick={() => createSession("api_key")} disabled={busy}>
+                    {MODE_LABELS.api_key}
+                    <span className="hint">billed via API</span>
                   </button>
                 </li>
               </ul>
