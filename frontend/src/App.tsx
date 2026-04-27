@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Terminal } from "./Terminal";
 import { authedFetch, bootstrapAuth, logout } from "./auth";
 
-type SessionMode = "api_key" | "subscription";
+type SessionMode = "api_key" | "subscription" | "config";
 
 interface Session {
   id: string;
@@ -15,6 +15,7 @@ interface Session {
 const MODE_LABELS: Record<SessionMode, string> = {
   api_key: "API key",
   subscription: "Subscription",
+  config: "Config sub",
 };
 
 interface SessionUser {
@@ -140,6 +141,28 @@ export function App() {
     }
   }
 
+  async function saveCredentials(id: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await authedFetch(`/api/sessions/${id}/save-credentials`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `save failed: ${res.status}`);
+      }
+      // Saved successfully — the config session has done its job. Tear it
+      // down so the user doesn't accidentally re-save a stale blob, and
+      // close the tab.
+      await deleteSession(id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (authError) {
     return (
       <div className="empty-state">
@@ -190,6 +213,12 @@ export function App() {
                     <span className="hint">billed via API</span>
                   </button>
                 </li>
+                <li>
+                  <button onClick={() => createSession("config")} disabled={busy}>
+                    {MODE_LABELS.config}
+                    <span className="hint">log in once · seeds KV for future sessions</span>
+                  </button>
+                </li>
               </ul>
             )}
           </div>
@@ -231,12 +260,23 @@ export function App() {
               {tabs.map((id) => {
                 const s = sessions.find((x) => x.id === id);
                 const status = s?.status ?? "Pending";
+                const isConfig = s?.mode === "config";
                 return (
                   <div key={id} className={`tab ${active === id ? "active" : ""}`}>
                     <button className="tab-label" onClick={() => setActive(id)}>
                       <span className="id">{id}</span>
                       <span className={`status status-${status.toLowerCase()}`}>{status}</span>
                     </button>
+                    {isConfig && (
+                      <button
+                        className="tab-action"
+                        onClick={() => saveCredentials(id)}
+                        disabled={busy || status !== "Active"}
+                        title="capture ~/.claude/.credentials.json from this pod and write it to KV"
+                      >
+                        save credentials
+                      </button>
+                    )}
                     <button
                       className="tab-close"
                       onClick={() => closeTab(id)}

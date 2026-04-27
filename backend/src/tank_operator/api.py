@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
+from .credentials_seed import CredentialsSeedError, harvest_and_save
 from .exec_proxy import bridge
 from .oauth_gateway import handle_bootstrap_blob, handle_oauth_token
 from .sessions import (
@@ -152,6 +153,41 @@ async def delete_session(session_id: str, user: User = Depends(current_user)) ->
     except SessionNotOwned:
         raise HTTPException(status_code=403, detail="session not owned by caller")
     return {"id": session_id, "status": "deleted"}
+
+
+@app.post("/api/sessions/{session_id}/save-credentials")
+async def save_credentials(
+    session_id: str, user: User = Depends(current_user)
+) -> dict[str, str]:
+    """Capture ~/.claude/.credentials.json from a config-mode session and seed KV.
+
+    Only valid for sessions in `config` mode — both as a UX guard
+    (the button only shows on those tabs) and as a defense-in-depth check
+    so a misconfigured caller can't dump credentials out of a regular
+    session pod's mounted Secret. After write, ESO mirrors KV → mounted
+    Secret within ~1m and the credential-refresh CronJob takes over from
+    the next tick.
+    """
+    try:
+        session = await sessions.get_session(owner=user.email, session_id=session_id)
+    except SessionNotOwned:
+        raise HTTPException(status_code=403, detail="session not owned by caller")
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session.mode != "config":
+        raise HTTPException(
+            status_code=400,
+            detail="save-credentials is only valid for config-mode sessions",
+        )
+    try:
+        pod_name = await sessions.get_pod_name(owner=user.email, session_id=session_id)
+    except PodNotReady:
+        raise HTTPException(status_code=503, detail="pod not ready")
+    try:
+        await harvest_and_save(namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
+    except CredentialsSeedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"id": session_id, "status": "saved"}
 
 
 @app.websocket("/api/sessions/{session_id}/exec")

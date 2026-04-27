@@ -52,8 +52,18 @@ class PodNotReady(Exception):
     pass
 
 
-SESSION_MODES = ("api_key", "subscription")
+SESSION_MODES = ("api_key", "subscription", "config")
 DEFAULT_SESSION_MODE = "subscription"
+# Config mode: a one-shot pod the user logs into via `claude /login` to seed
+# the OAuth credentials in KV. Differs from regular sessions in three ways:
+# (1) no credentials are pre-seeded into the pod (we're harvesting, not
+# consuming); (2) no platform.claude.com hostAlias override (claude needs to
+# reach the real Anthropic for OAuth); (3) no bypassPermissions (the user
+# is doing one interactive thing, not running an agent). After the user
+# completes /login, the orchestrator's POST /api/sessions/{id}/save-credentials
+# reads ~/.claude/.credentials.json out of the pod via exec and writes it to
+# Key Vault.
+CONFIG_MODE = "config"
 
 
 @dataclass
@@ -182,7 +192,12 @@ class SessionManager:
         # skip this whole stanza; the pod will boot but won't be able to
         # refresh — surfaces as a 401 the user can recover from by
         # recreating the session once the gateway is healthy.
-        if self._oauth_gateway_ip:
+        #
+        # Config mode skips this entirely: the user is about to do `claude
+        # /login`, which has to reach the REAL platform.claude.com to
+        # complete OAuth. Pointing it at our in-cluster gateway would make
+        # the auth endpoints 404.
+        if self._oauth_gateway_ip and mode != CONFIG_MODE:
             pod_spec["hostAliases"] = [
                 {"ip": self._oauth_gateway_ip, "hostnames": ["platform.claude.com"]}
             ]
@@ -280,6 +295,35 @@ class SessionManager:
             )
             for d in deployments.items
         ]
+
+    async def get_session(self, owner: str, session_id: str) -> SessionInfo:
+        """Look up a single session by id, verifying ownership.
+
+        Cheaper than get_pod_name because it doesn't wait for pod-Ready —
+        just reads the Deployment to get mode/status. Use this when you
+        only need session metadata (e.g. checking mode before allowing an
+        action), and get_pod_name when you need to actually exec into the
+        pod.
+        """
+        assert self._apps is not None
+        owner_label = _owner_label(owner)
+        try:
+            deployment = await self._apps.read_namespaced_deployment(
+                name=f"session-{session_id}", namespace=SESSIONS_NAMESPACE
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SessionNotFound(session_id) from e
+            raise
+        if deployment.metadata.labels.get("tank-operator/owner") != owner_label:
+            raise SessionNotOwned(session_id)
+        return SessionInfo(
+            id=session_id,
+            pod_name=None,
+            owner=owner,
+            status=_deployment_status(deployment),
+            mode=deployment.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE),
+        )
 
     async def get_pod_name(self, owner: str, session_id: str, timeout: float = 90.0) -> str:
         """Look up the pod backing a session, waiting up to `timeout` seconds for it to be Ready."""

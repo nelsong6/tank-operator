@@ -33,6 +33,21 @@ resource "azurerm_federated_identity_credential" "credential_refresher" {
   subject             = "system:serviceaccount:tank-operator:claude-credentials-refresher"
 }
 
+# Second federated credential on the same UAMI: lets the orchestrator pod
+# (SA `tank-operator/tank-operator`) write to the same KV secret. The
+# orchestrator uses this for the break-glass /api/sessions/{id}/save-credentials
+# endpoint, which captures a logged-in credentials.json from a config-mode
+# session pod and seeds KV. Same UAMI = same blast radius (one role
+# assignment, one secret) but two distinct pod identities can use it.
+resource "azurerm_federated_identity_credential" "credential_refresher_orchestrator" {
+  name                = "aks-tank-operator-credentials"
+  resource_group_name = data.azurerm_resource_group.main.name
+  parent_id           = azurerm_user_assigned_identity.credential_refresher.id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = data.azurerm_kubernetes_cluster.main.oidc_issuer_url
+  subject             = "system:serviceaccount:tank-operator:tank-operator"
+}
+
 # `Key Vault Secrets Officer` covers get + set + list + delete on secrets.
 # We only need get + set, but there's no narrower built-in role and a
 # custom role is overkill for a one-secret writer. Scope is the entire

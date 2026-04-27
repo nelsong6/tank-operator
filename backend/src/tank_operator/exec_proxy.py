@@ -64,6 +64,22 @@ log = logging.getLogger(__name__)
 # Unsetting ANTHROPIC_API_KEY in subscription mode is important — if both are
 # present, claude prefers the API key and bills against it.
 _BOOTSTRAP_SH = r"""
+# Config-mode: short-circuit the regular session bootstrap. The user is
+# here to do `claude /login` once so we can capture credentials.json and
+# write it to KV. No MCP wiring, no onboarding bypass, no credentials
+# pre-seed — claude needs to see a clean state to walk through OAuth.
+# The orchestrator's POST /api/sessions/{id}/save-credentials reads the
+# resulting ~/.claude/.credentials.json out of this pod via exec.
+if [ "${TANK_SESSION_MODE}" = "config" ]; then
+  mkdir -p $HOME/.claude
+  cat > $HOME/.claude/settings.json <<'EOF'
+{"theme":"dark"}
+EOF
+  cat > $HOME/.claude.json <<'EOF'
+{"hasCompletedOnboarding": true}
+EOF
+  exec claude /login
+fi
 # Read the projected SA token and export it as the Authorization bearer
 # for both HTTP MCP servers. claude-container's image-level entrypoint.sh
 # does this too, but kubectl exec starts a fresh shell that doesn't
@@ -145,6 +161,74 @@ STDOUT_CHANNEL = 1
 STDERR_CHANNEL = 2
 ERROR_CHANNEL = 3
 RESIZE_CHANNEL = 4
+
+
+async def exec_capture(namespace: str, pod_name: str, command: list[str]) -> bytes:
+    """Run a one-shot command in `pod_name` and return its stdout as bytes.
+
+    Used for short, read-only operations (e.g. `cat /some/file`) where the
+    caller needs the bytes back as a single buffer. For interactive long-
+    lived streams (TTY shells), use `bridge` instead.
+
+    Raises RuntimeError if the K8s exec error channel reports a non-Success
+    status (typical when the command exits non-zero, e.g. cat on a missing
+    file). stderr is logged at WARNING but not surfaced to the caller —
+    callers that care should check command output instead.
+    """
+    ws_client = WsApiClient()
+    core = client.CoreV1Api(api_client=ws_client)
+    try:
+        cm = await core.connect_get_namespaced_pod_exec(
+            name=pod_name,
+            namespace=namespace,
+            command=command,
+            stdin=False,
+            stdout=True,
+            stderr=True,
+            tty=False,
+            _preload_content=False,
+        )
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        error_status: dict[str, str] | None = None
+        async with cm as k8s_ws:
+            async for wsmsg in k8s_ws:
+                if wsmsg.type == aiohttp.WSMsgType.BINARY:
+                    if not wsmsg.data:
+                        continue
+                    channel = wsmsg.data[0]
+                    payload = wsmsg.data[1:]
+                    if channel == STDOUT_CHANNEL:
+                        stdout_chunks.append(payload)
+                    elif channel == STDERR_CHANNEL:
+                        stderr_chunks.append(payload)
+                    elif channel == ERROR_CHANNEL:
+                        # K8s sends a v1.Status JSON here at end-of-stream;
+                        # {"status":"Success"} on exit-0, otherwise a
+                        # Failure with details (including non-zero exit
+                        # code in `details.causes[].message`).
+                        try:
+                            error_status = json.loads(payload)
+                        except ValueError:
+                            error_status = {"status": "Failure", "message": payload.decode(errors="replace")}
+                elif wsmsg.type in (
+                    aiohttp.WSMsgType.CLOSE,
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
+                    break
+    finally:
+        await ws_client.close()
+
+    if stderr_chunks:
+        log.warning(
+            "exec %s stderr: %s",
+            command,
+            b"".join(stderr_chunks).decode(errors="replace")[:500],
+        )
+    if error_status is not None and error_status.get("status") != "Success":
+        raise RuntimeError(f"exec {command} failed: {error_status}")
+    return b"".join(stdout_chunks)
 
 
 async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
