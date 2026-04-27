@@ -1,10 +1,15 @@
-"""CronJob entrypoint: rotate Anthropic OAuth credentials in Key Vault.
+"""Rotate Anthropic OAuth credentials in Key Vault.
 
-Runs as a singleton (CronJob with concurrencyPolicy: Forbid). Reads the
-current credentials.json blob from Key Vault, calls platform.claude.com
-with the refresh token to get a fresh access+refresh pair, writes the
-rotated blob back to Key Vault. ExternalSecrets then mirrors KV to the
-in-cluster Secret that the OAuth gateway pod mounts as a file.
+Reads the current credentials.json blob from Key Vault, calls
+platform.claude.com with the refresh token to get a fresh access+refresh
+pair, writes the rotated blob back to Key Vault. ExternalSecrets then
+mirrors KV to the in-cluster Secret that the OAuth gateway pod mounts as
+a file.
+
+Driven by the orchestrator's session lifecycle (see sessions.py): kicked
+on the 0 → 1 session transition, runs periodically while sessions exist,
+stops when the last session leaves. Idle clusters do zero rotations —
+the refresh token sits in KV untouched until the next user session.
 
 This is the only thing in the system that calls platform.claude.com's
 token endpoint with the real refresh token. The gateway is read-only;
@@ -14,24 +19,21 @@ themselves and invalidate ours.
 Failure modes:
   - Anthropic returns 400 invalid_grant: the refresh token in KV is no
     longer valid (someone re-authenticated elsewhere, or a previous
-    rotation succeeded but didn't persist). Re-seed KV manually with a
-    fresh credentials.json from a logged-in machine.
-  - Anthropic transient 5xx / network: exit non-zero; the next CronJob
-    tick retries. Schedule should be < access-token TTL so one missed
-    run doesn't strand sessions.
+    rotation succeeded but didn't persist). User runs the in-app
+    "+ config sub" flow to re-seed.
+  - Anthropic transient 5xx / network: the orchestrator's periodic loop
+    retries on the next interval; in-flight sessions keep using the
+    last known-good access token until then.
   - KV write fails after a successful Anthropic refresh: WORST CASE.
-    Anthropic has rotated R1→R2, but KV still holds R1. Next run will
-    400. Mitigation: this script writes KV first by structure, but
-    physically the network can't be rolled back — accept the risk and
-    rely on manual re-seed.
+    Anthropic has rotated R1→R2, but KV still holds R1. Next call will
+    400. Recovery: re-seed via "+ config sub". The network can't be
+    rolled back, accept the risk.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import sys
 from typing import Any
 
 import httpx
@@ -50,7 +52,8 @@ ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 
 
-async def _refresh_once() -> None:
+async def refresh_now() -> None:
+    """One rotation: read KV, refresh against Anthropic, write KV back."""
     kv_url = os.environ["AZURE_KEYVAULT_URL"]
     secret_name = os.environ.get("CLAUDE_CREDENTIALS_KV_KEY", "claude-code-credentials")
 
@@ -81,8 +84,6 @@ async def _refresh_once() -> None:
                     headers={"Content-Type": "application/json"},
                 )
             if resp.status_code != 200:
-                # Surface the body so a 400 invalid_grant is obvious in
-                # CronJob logs without having to attach to the pod.
                 log.error("oauth refresh failed: status=%s body=%s", resp.status_code, resp.text[:500])
                 resp.raise_for_status()
             data: dict[str, Any] = resp.json()
@@ -99,19 +100,3 @@ async def _refresh_once() -> None:
             await kv.set_secret(secret_name, json.dumps(updated))
     finally:
         await cred.close()
-
-
-def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    try:
-        asyncio.run(_refresh_once())
-    except Exception:
-        log.exception("credential refresh failed")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

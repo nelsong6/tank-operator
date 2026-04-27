@@ -45,13 +45,14 @@ spec:
               value: /etc/claude-credentials/{{ .Values.externalSecret.claudeCredentials.secretKey }}
             - name: CLAUDE_OAUTH_GATEWAY_HOST
               value: {{ .Values.oauthGateway.serviceHost | quote }}
-            # Workload-identity wiring for the break-glass save-credentials
-            # endpoint, which writes a captured blob to KV. Token file is
-            # mounted by the WI webhook because the pod carries the
+            # Workload-identity wiring for the orchestrator's KV writes:
+            # in-process credential rotation while sessions exist, and
+            # the break-glass save-credentials endpoint that captures a
+            # logged-in blob from a config-mode pod. Token file is mounted
+            # by the WI webhook because the pod carries the
             # `azure.workload.identity/use=true` label; AZURE_CLIENT_ID +
-            # AZURE_TENANT_ID arrive via envFrom from the same ESO Secret
-            # the credential-refresh CronJob uses (same UAMI, second
-            # federated identity credential — see infra/credential_refresher.tf).
+            # AZURE_TENANT_ID arrive via envFrom from the ESO Secret that
+            # syncs the UAMI's client_id from KV.
             - name: AZURE_KEYVAULT_URL
               value: {{ .Values.credentialRefresher.keyVaultUrl | quote }}
             - name: CLAUDE_CREDENTIALS_KV_KEY
@@ -60,6 +61,10 @@ spec:
               value: /var/run/secrets/azure/tokens/azure-identity-token
             - name: AZURE_AUTHORITY_HOST
               value: https://login.microsoftonline.com/
+            # In-process credential rotation cadence WHILE sessions exist;
+            # idle clusters skip refreshes entirely. See sessions.py.
+            - name: CREDENTIAL_REFRESH_INTERVAL_SECONDS
+              value: {{ .Values.credentialRefresher.intervalSeconds | quote }}
           envFrom:
             - secretRef:
                 name: {{ .Values.externalSecret.auth.secretName }}
@@ -91,10 +96,10 @@ spec:
             optional: true  # cert-manager hasn't issued yet on first install
         - name: claude-credentials
           secret:
-            # ESO-managed; the credential-refresh CronJob writes rotations
-            # to KV and ESO mirrors them here within ~1 minute. Marked
-            # optional so first install doesn't crash-loop the pod before
-            # ESO has synced.
+            # ESO-managed; the orchestrator's in-process rotation writes
+            # to KV and ESO mirrors KV → here within ~1m. Marked optional
+            # so first install doesn't crash-loop the pod before ESO has
+            # synced (or before "+ config sub" has seeded credentials).
             secretName: {{ .Values.externalSecret.claudeCredentials.secretName }}
             optional: true
 ---

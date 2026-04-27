@@ -43,24 +43,28 @@ ingress:
 oauthGateway:
   serviceHost: claude-oauth-gateway.tank-operator.svc.cluster.local
 
-# Credential refresher: a CronJob that calls platform.claude.com on a fixed
-# schedule with the stored refresh token, then writes the rotated blob
-# back to KV. The orchestrator's OAuth gateway is read-only — this is the
-# *only* thing in the system that mutates the credentials. See
-# templates/credential-refresher.yaml for the rationale and infra/
-# credential_refresher.tf for the UAMI + KV role assignment.
+# Anthropic credential rotation: runs in-process inside the orchestrator
+# pod, gated on session existence. On the 0 → 1 session transition we do
+# an immediate refresh and start a periodic timer; the timer cancels on
+# 1 → 0. Idle clusters do zero rotations — the refresh token sits in KV
+# untouched until the next user session. See backend/src/tank_operator/
+# {sessions.py,refresh_credentials.py}.
+#
+# The orchestrator authenticates to KV as the `claude-credentials-refresher`
+# UAMI (infra/credential_refresher.tf). The "refresher" name is a hangover
+# from the prior CronJob design; the UAMI itself is reused as-is. The
+# ExternalSecret below syncs AZURE_CLIENT_ID + AZURE_TENANT_ID from KV
+# so DefaultAzureCredential in the orchestrator can mint a federated token
+# bound to that UAMI.
 credentialRefresher:
-  name: claude-credentials-refresher
-  serviceAccount: claude-credentials-refresher
   configSecret: claude-credentials-refresher-config
-  # Anthropic access tokens are typically ~1h; 30m gives one retry buffer
-  # before sessions start booting with expired tokens. Tune down only if
-  # you've observed shorter access-token TTLs in refresh responses.
-  schedule: "*/30 * * * *"
+  # Periodic refresh cadence WHILE sessions exist. Anthropic access
+  # tokens are typically ~1h; 30m keeps a comfortable buffer. Read by
+  # sessions.py via the CREDENTIAL_REFRESH_INTERVAL_SECONDS env var
+  # (set in templates/deployment.yaml).
+  intervalSeconds: 1800
   keyVaultUrl: https://romaine-kv.vault.azure.net/
-  # Published to KV by infra/credential_refresher.tf (Terraform). The
-  # client_id syncs into AZURE_CLIENT_ID via the ExternalSecret in
-  # templates/credential-refresher.yaml.
+  # Published to KV by infra/credential_refresher.tf (Terraform).
   kvClientIdKey: claude-credentials-refresher-mi-client-id
   kvTenantIdKey: mcp-tenant-id
 
@@ -98,10 +102,11 @@ externalSecret:
         kvKey: anthropic-api-key
   # Claude Code subscription credentials. Lives ONLY in the orchestrator
   # namespace; session pods cannot read this Secret. KV is the source of
-  # truth: the credential-refresh CronJob writes rotations to KV, ESO
+  # truth: the orchestrator's in-process rotation writes to KV, ESO
   # mirrors KV → this Secret on a 1m interval, and the orchestrator pod
-  # mounts the Secret as a file. Re-seed (after refresh chain dies) by
-  # uploading a fresh credentials.json to the KV secret named below.
+  # mounts the Secret as a file. Re-seed via the in-app "+ config sub"
+  # flow, or out-of-band by uploading a fresh credentials.json to the
+  # KV secret named below.
   claudeCredentials:
     secretName: claude-code-credentials
     secretKey: claude-code-credentials

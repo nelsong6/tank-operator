@@ -9,9 +9,10 @@ dependencies = [
   "kubernetes-asyncio>=31.1.0",
   "pyjwt[crypto]>=2.9.0",
   "httpx>=0.27",
-  # Used only by the refresh_credentials CronJob entrypoint; in the
-  # orchestrator pod they sit unused. Kept here (vs. a separate package)
-  # so the CronJob can run the same image without a second build target.
+  # Used by the in-process credential rotation in sessions.py +
+  # refresh_credentials.py to read/write the Anthropic OAuth blob in KV.
+  # Authenticated via workload identity (DefaultAzureCredential picks up
+  # the AKS-injected env vars and SA-token file).
   "azure-identity>=1.19",
   "azure-keyvault-secrets>=4.9",
 ]

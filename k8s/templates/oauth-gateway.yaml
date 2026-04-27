@@ -205,16 +205,18 @@ spec:
 ---
 {{- /*
 Credentials Secret: KV is the source of truth, ESO mirrors KV → this
-Secret on a short interval (1m) so rotations performed by the
-credential-refresh CronJob (templates/credential-refresher.yaml) reach
-the orchestrator pod's mounted volume promptly. The orchestrator only
-reads this Secret; the CronJob is the only writer (and it writes to KV,
-not directly to the Secret).
+Secret on a short interval (1m) so rotations performed in the
+orchestrator (see backend/src/tank_operator/sessions.py +
+refresh_credentials.py) reach the pod's mounted volume promptly. The
+orchestrator's gateway code is the reader; rotation in the same process
+is the only writer to KV.
 
-To re-seed (e.g. after the refresh chain dies and you have to log in
-fresh on another machine), upload the new credentials.json blob to the
-KV secret named by .Values.externalSecret.claudeCredentials.kvKey. ESO
-picks it up on the next refresh.
+To re-seed (refresh chain dies, etc.) use the in-app "+ config sub"
+flow which captures a logged-in credentials.json and writes it to KV
+via POST /api/sessions/{id}/save-credentials. Out-of-band: upload a
+fresh blob to the KV secret named by
+.Values.externalSecret.claudeCredentials.kvKey; ESO picks it up on the
+next refresh.
 */}}
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret

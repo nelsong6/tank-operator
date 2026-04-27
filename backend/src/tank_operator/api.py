@@ -165,8 +165,8 @@ async def save_credentials(
     (the button only shows on those tabs) and as a defense-in-depth check
     so a misconfigured caller can't dump credentials out of a regular
     session pod's mounted Secret. After write, ESO mirrors KV → mounted
-    Secret within ~1m and the credential-refresh CronJob takes over from
-    the next tick.
+    Secret within ~1m and the orchestrator's in-process rotation (kicked
+    on the next session create) takes over from there.
     """
     try:
         session = await sessions.get_session(owner=user.email, session_id=session_id)
