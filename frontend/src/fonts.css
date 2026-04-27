@@ -14,3 +14,18 @@
   font-style: normal;
   font-display: swap;
 }
+
+/*
+ * Archivo (variable). Used as `--font-primary` for chrome labels — sidebar
+ * brand, "+ New session", session row IDs, profile name, welcome wordmark.
+ * Mirrors OpenWebUI's `.font-primary` utility (their src/app.css:100).
+ */
+@font-face {
+  font-family: "Archivo";
+  src: url("/fonts/Archivo.ttf") format("truetype-variations"),
+       url("/fonts/Archivo.ttf") format("truetype");
+  font-weight: 100 900;
+  font-stretch: 62.5% 125%;
+  font-style: normal;
+  font-display: swap;
+}
