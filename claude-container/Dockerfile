@@ -19,6 +19,7 @@ RUN apk add --no-cache \
         less \
         py3-pip \
         python3 \
+        tmux \
         unzip \
         vim
 
@@ -48,6 +49,12 @@ RUN mkdir -p /workspace && cp /opt/claude-container/mcp.json /workspace/.mcp.jso
 # substitutes into the Authorization headers.
 COPY claude-container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Hide tmux's status bar so the claude TUI gets the full terminal height.
+# tmux is the WS-reconnect-survival wrapper for the claude session
+# (see exec_proxy._BOOTSTRAP_SH); the status bar would steal one row.
+RUN printf 'set -g status off\nset -g default-terminal "tmux-256color"\n' > /home/node/.tmux.conf \
+    && chown node:node /home/node/.tmux.conf
 
 # Run the agent as a non-root user so claude's safety check accepts
 # bypassPermissions mode (it refuses to enable bypass when uid 0). Also

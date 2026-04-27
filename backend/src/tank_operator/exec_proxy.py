@@ -57,13 +57,25 @@ log = logging.getLogger(__name__)
 #                                   the same gateway and gets a new access
 #                                   token; the gateway is the only thing that
 #                                   ever touches Anthropic's OAuth endpoint.
-# Then exec claude. If claude exits we drop into bash so the WS stays useful.
+# claude runs inside a named tmux session ("tank") so that when the
+# browser WS drops and reconnects, the new kubectl-exec re-attaches to
+# the same session — preserving the in-progress conversation, scrollback,
+# and PTY state. Without this, every reconnect spawned a fresh `claude`.
+# If claude exits inside the session we drop into bash so the WS stays
+# useful (and the tmux window doesn't disappear).
 #
 # `customApiKeyResponses` only matters in api_key mode; in subscription mode
 # claude reads from .credentials.json and never prompts about an API key.
 # Unsetting ANTHROPIC_API_KEY in subscription mode is important — if both are
 # present, claude prefers the API key and bills against it.
 _BOOTSTRAP_SH = r"""
+# Reconnect fast-path: if the tmux session already exists this is a
+# reattach, not a fresh boot. Skip settings/credentials setup (already
+# done on first connect; rewriting is idempotent but wasteful, and in
+# subscription mode would re-hit the OAuth gateway every reconnect).
+if tmux has-session -t tank 2>/dev/null; then
+  exec tmux attach-session -t tank
+fi
 # Config-mode: short-circuit the regular session bootstrap. The user is
 # here to do `claude /login` once so we can capture credentials.json and
 # write it to KV. No MCP wiring, no onboarding bypass, no credentials
@@ -151,8 +163,7 @@ cat > $HOME/.claude.json <<EOF
   }
 }
 EOF
-claude
-exec bash
+exec tmux new-session -s tank 'claude; exec bash'
 """
 EXEC_COMMAND = ["bash", "-lc", _BOOTSTRAP_SH]
 
