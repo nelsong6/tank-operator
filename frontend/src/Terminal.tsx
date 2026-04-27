@@ -39,7 +39,7 @@ export function Terminal({ sessionId, status, visible }: Props) {
       // monospace fonts via per-glyph CSS font fallback.
       fontFamily: 'ui-monospace, "Cascadia Code", "Consolas", "Symbols Nerd Font Mono", monospace',
       fontSize: 13,
-      theme: { background: "#0e0e10", foreground: "#e6e6e6" },
+      theme: { background: "#171717", foreground: "#e4e4e4" },
     });
     const fit = new FitAddon();
     fitRef.current = fit;

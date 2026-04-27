@@ -4,13 +4,12 @@
  *   - src/app.css (body bg #171717, font-primary = Archivo)
  *   - src/lib/components/layout/Sidebar.svelte (sidebar palette, radii, padding)
  *   - src/lib/components/layout/Sidebar/ChatItem.svelte (row palette: hover darker, active lighter)
- *
- * Hex values below are OKLCH-equivalents from their @theme block.
+ *   - src/lib/components/chat/Placeholder.svelte (welcome layout)
+ *   - src/lib/components/chat/Suggestions.svelte (suggestion-card hover bg-white/5)
  */
 
 :root {
-  /* Type — system stack first (matches their tailwind.css base layer); Archivo
-     for chrome labels (.font-primary) once we wire it up in step 2/3 */
+  /* Type — system stack first; Archivo for chrome labels gets wired in step 3 */
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, Roboto,
     Ubuntu, Cantarell, "Noto Sans", sans-serif, "Helvetica Neue", Arial,
@@ -22,9 +21,10 @@
   --text-sm: 0.875rem;
   --text-base: 1rem;
   --text-lg: 1.125rem;
+  --text-2xl: 1.5rem;
   --text-3xl: 1.875rem;
 
-  /* Neutrals — direct from OpenWebUI's @theme @ src/tailwind.css:5-18 */
+  /* Neutrals — direct from OpenWebUI's @theme */
   --gray-50: #fafafa;
   --gray-100: #ebebeb;
   --gray-200: #e4e4e4;
@@ -38,43 +38,43 @@
   --gray-900: #161616;
   --gray-950: #0d0d0d;
 
-  /* Surfaces — names map to roles, not Tailwind utilities */
-  --bg-app: #171717;                       /* literal in app.css:380 */
-  --bg-sidebar: rgba(13, 13, 13, 0.7);     /* gray-950/70 — Sidebar.svelte:990 */
-  --bg-elevated: var(--gray-850);          /* dropdowns, popovers — UserMenu.svelte:126 */
-  --bg-hover: var(--gray-950);             /* hover on items: DARKER than sidebar */
-  --bg-hover-soft: rgba(255, 255, 255, 0.05); /* suggestion-card hover (white/5) */
-  --bg-active: var(--gray-900);            /* selected row: LIGHTER than sidebar */
+  /* Surfaces */
+  --bg-app: #171717;
+  --bg-sidebar: rgba(13, 13, 13, 0.7);
+  --bg-elevated: var(--gray-850);
+  --bg-hover: var(--gray-950);
+  --bg-hover-soft: rgba(255, 255, 255, 0.05);
+  --bg-active: var(--gray-900);
 
   /* Borders */
-  --border-subtle: rgba(38, 38, 38, 0.3);  /* gray-850/30 */
+  --border-subtle: rgba(38, 38, 38, 0.3);
   --border-strong: var(--gray-800);
 
-  /* Text — they use both gray-200 and gray-300 for body in different places */
-  --text-primary: #ffffff;                 /* dark:text-white */
-  --text-body: var(--gray-200);            /* sidebar wrapper text */
-  --text-secondary: var(--gray-300);       /* suggestion title, body copy */
-  --text-muted: var(--gray-400);           /* "Suggested" label, subtitles */
-  --text-faint: var(--gray-500);           /* timestamps, section labels */
+  /* Text */
+  --text-primary: #ffffff;
+  --text-body: var(--gray-200);
+  --text-secondary: var(--gray-300);
+  --text-muted: var(--gray-400);
+  --text-faint: var(--gray-500);
 
-  /* Accents — sparingly */
-  --accent: #3b82f6;                       /* blue-500 */
-  --accent-soft: rgba(56, 189, 248, 0.15); /* sky-500/15 */
-  --accent-fg: #bae6fd;                    /* sky-200 */
-  --unread: #0ea5e9;                       /* sky-500 */
-  --status-online: #22c55e;                /* green-500 */
+  /* Accents */
+  --accent: #3b82f6;
+  --accent-soft: rgba(56, 189, 248, 0.15);
+  --accent-fg: #bae6fd;
+  --unread: #0ea5e9;
+  --status-online: #22c55e;
   --status-error-bg: rgba(239, 68, 68, 0.12);
-  --status-error-fg: #f87171;              /* red-400 */
+  --status-error-fg: #f87171;
 
-  /* Radii — match their utility usage */
-  --radius-sm: 0.375rem;                   /* rounded-md, code chips */
-  --radius-md: 0.5rem;                     /* rounded-lg */
-  --radius-lg: 0.75rem;                    /* rounded-xl — chat row, suggestion card */
-  --radius-xl: 1rem;                       /* rounded-2xl — sidebar item, profile */
-  --radius-2xl: 1.5rem;                    /* rounded-3xl — pill button */
+  /* Radii */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.5rem;
   --radius-pill: 9999px;
 
-  /* Spacing — stock Tailwind 4px scale, sized to the literals OWUI uses */
+  /* Spacing */
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -82,10 +82,12 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
+  --sidebar-width: 260px;
+
   font-family: var(--font-sans);
   background: var(--bg-app);
   color: var(--text-body);
-  font-size: var(--text-sm);                /* OWUI sidebar default is text-sm */
+  font-size: var(--text-sm);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -96,21 +98,16 @@ body {
   background: var(--bg-app);
 }
 
-/* OWUI's `tailwind.css:41` sets cursor:pointer on every button. Match. */
 button {
   cursor: pointer;
   font: inherit;
   background: transparent;
   color: inherit;
   border: none;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-xl);
-  transition: background 120ms ease, color 120ms ease;
+  padding: 0;
+  border-radius: var(--radius-md);
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   outline: none;
-}
-
-button:hover:not(:disabled) {
-  background: var(--bg-hover);
 }
 
 button:disabled {
@@ -118,32 +115,43 @@ button:disabled {
   cursor: default;
 }
 
-/* Primary button — OWUI ConfirmDialog.svelte:175 (inverted in dark mode:
-   light bg, dark text, pill shape). */
+/* Boot states (signing in / auth error) ------------------------------------- */
+
+.boot-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  gap: var(--space-4);
+  color: var(--text-muted);
+}
+
+.boot-text {
+  font-family: var(--font-primary);
+  font-size: var(--text-base);
+  letter-spacing: 0.02em;
+}
+
+.btn-primary,
+.btn-secondary {
+  font-weight: 500;
+  font-family: var(--font-primary);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-2xl);
+}
+
 .btn-primary {
   background: var(--gray-100);
   color: var(--gray-800);
-  font-weight: 500;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-2xl);
 }
+.btn-primary:hover:not(:disabled) { background: #ffffff; }
 
-.btn-primary:hover:not(:disabled) {
-  background: #ffffff;
-}
-
-/* Secondary button — ConfirmDialog.svelte:165 */
 .btn-secondary {
   background: var(--gray-850);
   color: var(--text-primary);
-  font-weight: 500;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-2xl);
 }
-
-.btn-secondary:hover:not(:disabled) {
-  background: var(--gray-800);
-}
+.btn-secondary:hover:not(:disabled) { background: var(--gray-800); }
 
 .error {
   background: var(--status-error-bg);
@@ -155,30 +163,11 @@ button:disabled {
   margin: var(--space-2) var(--space-4);
 }
 
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  color: var(--text-muted);
-  gap: var(--space-4);
-  font-family: var(--font-primary);
-}
-
-.empty-state code {
-  background: var(--gray-850);
-  padding: 0.1rem var(--space-2);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-
 /* App shell ----------------------------------------------------------------- */
 
 .shell {
   display: grid;
-  grid-template-columns: 260px 1fr;        /* OWUI default sidebarWidth */
+  grid-template-columns: var(--sidebar-width) 1fr;
   height: 100vh;
 }
 
@@ -188,227 +177,115 @@ button:disabled {
   background: var(--bg-sidebar);
   color: var(--text-body);
   overflow: hidden;
-  /* OWUI doesn't use a vertical rule; the bg contrast does the work. We can
-     re-add a 1px line in step 3 if it reads weak. */
+  font-size: var(--text-sm);
 }
 
-.sidebar-header {
+/* Brand row — OWUI Sidebar.svelte:1003-1052 (without close button) */
+.sidebar-brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--space-2) calc(var(--space-2) + 0.0625rem);  /* ~px-[0.5625rem] */
-  padding-top: var(--space-2);
+  padding: var(--space-2) calc(var(--space-2) + 0.0625rem) var(--space-1);
+  flex-shrink: 0;
 }
 
-.sidebar-header h1 {
+.sidebar-brand h1 {
+  font-family: var(--font-primary);
   font-size: var(--text-base);
   font-weight: 500;
   margin: 0;
-  font-family: var(--font-primary);
   letter-spacing: -0.005em;
+  color: var(--text-primary);
 }
 
-.sidebar-footer {
-  margin-top: auto;
-  padding: var(--space-2) var(--space-3);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
+/* Section gutters — OWUI uses px-[0.4375rem] (7px) */
+.sidebar-section,
+.sidebar-list {
+  padding: 0 0.4375rem;
 }
 
-.sidebar-footer .email {
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.sidebar-section {
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-2);
+  flex-shrink: 0;
+}
+
+.sidebar-list {
   flex: 1;
-}
-
-.sessions {
-  list-style: none;
-  margin: 0;
-  padding: var(--space-2) 0.4375rem;        /* OWUI sidebar gutter px-[0.4375rem] */
   overflow-y: auto;
+  padding-bottom: var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
+  min-height: 0;
 }
 
-/* Chat-row geometry from ChatItem.svelte:448 — px-[11px] py-[6px], rounded-xl */
-.sessions li {
+.sidebar-section-label {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-weight: 500;
+  padding: var(--space-3) var(--space-3) var(--space-1);
+}
+
+/* + New session row — OWUI Sidebar.svelte:1064-1084.
+   Transparent until hover, NOT a filled CTA. */
+.new-row {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  align-items: stretch;
+  border-radius: var(--radius-xl);
   background: transparent;
-  border: none;
-  border-radius: var(--radius-lg);
-  padding: 6px 11px;
-  min-height: 32px;
   transition: background 120ms ease;
 }
 
-/* Hover is DARKER than sidebar bg (OWUI inverts the usual pattern). */
-.sessions li:hover {
-  background: var(--bg-hover);
-}
+.new-row:hover { background: var(--bg-hover); }
 
-/* Active/open is LIGHTER than sidebar bg. */
-.sessions li.is-open {
-  background: var(--bg-active);
-}
-
-.sessions .open {
-  background: transparent;
-  border: none;
+.new-row-main {
   display: flex;
-  flex: 1;
   align-items: center;
-  gap: var(--space-2);
-  text-align: left;
-  padding: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  min-width: 0;
-  border-radius: 0;
-}
-
-.sessions .open:hover:not(:disabled) {
-  background: transparent;
-}
-
-.sessions .open .id {
+  gap: var(--space-3);
+  padding: var(--space-2) 0.625rem;            /* px-2.5 py-2 */
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-}
-
-.sessions li.is-open .open .id {
-  color: var(--text-primary);
-}
-
-.sessions .delete {
-  padding: 0.1rem var(--space-2);
-  font-size: var(--text-xs);
-  background: transparent;
-  border: none;
-  color: var(--text-muted);
-  border-radius: var(--radius-md);
-}
-
-.sessions .delete:hover:not(:disabled) {
-  background: var(--gray-850);
-  color: var(--text-primary);
-}
-
-.sessions .empty {
-  justify-content: center;
-  color: var(--text-faint);
+  min-width: 0;
+  color: var(--text-body);
+  font-family: var(--font-primary);
   font-size: var(--text-sm);
-  background: transparent;
-  border: 1px dashed var(--border-subtle);
-}
-
-/* Status / mode chips. OWUI doesn't have these — keep them low-contrast and
-   neutral so they don't fight the rest of the chrome. */
-.status {
-  font-size: 10px;
-  padding: 0.05rem var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--gray-850);
-  color: var(--text-muted);
   font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-.status-active {
-  background: rgba(34, 197, 94, 0.12);     /* green-500/12 */
-  color: var(--status-online);
-}
-
-.status-failed {
-  background: var(--status-error-bg);
-  color: var(--status-error-fg);
-}
-
-.status-pending {
-  background: var(--gray-850);
-  color: var(--gray-400);
-}
-
-.mode {
-  font-size: 10px;
-  padding: 0.05rem var(--space-2);
-  border-radius: var(--radius-md);
-  background: var(--gray-850);
-  color: var(--text-muted);
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-}
-
-.mode-subscription {
-  background: var(--accent-soft);
-  color: var(--accent-fg);
-}
-
-.mode-api_key {
-  background: rgba(168, 85, 247, 0.12);    /* violet-500/12 */
-  color: #d8b4fe;                          /* violet-300 */
-}
-
-.mode-config {
-  background: rgba(244, 114, 182, 0.12);   /* pink-400/12 */
-  color: #f9a8d4;                          /* pink-300 */
-}
-
-/* Split + button — current placement is inside .sidebar-header. Step 2 will
-   move "+ new" to the OWUI-style transparent hover row in the sidebar body.
-   For now just neutralize the surface so it doesn't look heavy. */
-.split-button {
-  position: relative;
-  display: inline-flex;
-}
-
-.split-main {
-  background: var(--gray-850);
-  color: var(--text-primary);
-  padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-xl) 0 0 var(--radius-xl);
-  font-size: var(--text-sm);
+  text-align: left;
 }
 
-.split-main:hover:not(:disabled) {
-  background: var(--gray-800);
+.new-row-main:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: transparent;                     /* parent .new-row paints hover */
 }
 
-.split-toggle {
-  background: var(--gray-850);
+.row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
-  padding: var(--space-2);
+}
+
+.new-row:hover .row-icon { color: var(--text-primary); }
+
+.new-row-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-3);
+  color: var(--text-muted);
   border-radius: 0 var(--radius-xl) var(--radius-xl) 0;
-  margin-left: 1px;
-  font-size: var(--text-xs);
+  flex-shrink: 0;
 }
 
-.split-toggle:hover:not(:disabled) {
-  background: var(--gray-800);
+.new-row-toggle:hover:not(:disabled) {
   color: var(--text-primary);
+  background: transparent;
 }
 
-.split-button.open .split-toggle {
-  background: var(--gray-800);
-  color: var(--text-primary);
-}
-
-/* Dropdown — UserMenu.svelte:126 chrome */
-.split-menu {
+/* Dropdown chrome — UserMenu.svelte:126 */
+.dropdown {
   position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 10;
+  z-index: 20;
   list-style: none;
   margin: 0;
   padding: var(--space-1);
@@ -416,15 +293,20 @@ button:disabled {
   border: 1px solid var(--gray-800);
   border-radius: var(--radius-xl);
   min-width: 14rem;
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.4);
   font-size: var(--text-sm);
+  color: var(--text-body);
 }
 
-.split-menu li {
-  display: block;
+.dropdown-mode {
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 16rem;
 }
 
-.split-menu button {
+.dropdown li { display: block; }
+
+.dropdown button {
   width: 100%;
   text-align: left;
   background: transparent;
@@ -438,16 +320,235 @@ button:disabled {
   color: var(--text-body);
 }
 
-.split-menu button:hover:not(:disabled) {
+.dropdown button:hover:not(:disabled) {
   background: var(--gray-900);
+  color: var(--text-primary);
 }
 
-.split-menu .hint {
+.dropdown-title {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.dropdown button:hover:not(:disabled) .dropdown-title { color: var(--text-primary); }
+
+.dropdown-hint {
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
 
-/* Workspace + tabs ---------------------------------------------------------- */
+.dropdown-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: var(--space-2) var(--space-3);
+}
+
+.dropdown-meta-label {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.dropdown-meta-value {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background: var(--gray-800);
+  margin: var(--space-1) 0;
+}
+
+/* Sessions list ------------------------------------------------------------- */
+
+.sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+/* Chat-row geometry from ChatItem.svelte:448 — px-[11px] py-[6px], rounded-xl,
+   hover DARKER than surface, active/open LIGHTER than surface. */
+.sessions li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: transparent;
+  border-radius: var(--radius-lg);
+  padding: 6px 11px;
+  min-height: 32px;
+  transition: background 120ms ease;
+}
+
+.sessions li:hover { background: var(--bg-hover); }
+.sessions li.is-open { background: var(--bg-active); }
+
+.session-open {
+  background: transparent;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  min-width: 0;
+  border-radius: 0;
+  color: var(--text-secondary);
+}
+
+.sessions li.is-open .session-open { color: var(--text-primary); }
+
+.session-id {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-delete {
+  padding: var(--space-1);
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.session-delete:hover:not(:disabled) {
+  background: var(--gray-850);
+  color: var(--text-primary);
+}
+
+.sessions-empty {
+  display: flex;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+  padding: var(--space-4) var(--space-3);
+  font-style: italic;
+}
+
+.sessions-empty:hover { background: transparent; }
+
+/* Status / mode chips ------------------------------------------------------- */
+
+.status {
+  font-size: 10px;
+  padding: 0.05rem var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--gray-850);
+  color: var(--text-muted);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  flex-shrink: 0;
+}
+
+.status-active   { background: rgba(34,197,94,0.12); color: var(--status-online); }
+.status-failed   { background: var(--status-error-bg); color: var(--status-error-fg); }
+.status-pending  { background: var(--gray-850); color: var(--gray-400); }
+
+.mode {
+  font-size: 10px;
+  padding: 0.05rem var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--gray-850);
+  color: var(--text-muted);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.mode-subscription { background: var(--accent-soft); color: var(--accent-fg); }
+.mode-api_key      { background: rgba(168,85,247,0.12); color: #d8b4fe; }
+.mode-config       { background: rgba(244,114,182,0.12); color: #f9a8d4; }
+
+/* Profile footer — OWUI Sidebar.svelte:1593-1638 */
+
+.sidebar-footer {
+  position: relative;
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.profile {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-xl);
+  background: transparent;
+  color: var(--text-body);
+  font-family: var(--font-primary);
+}
+
+.profile:hover:not(:disabled) {
+  background: rgba(22, 22, 22, 0.5);           /* gray-900/50 */
+  color: var(--text-primary);
+}
+
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--gray-800);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+  font-family: var(--font-primary);
+}
+
+.profile-text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+}
+
+.profile-name {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-kebab {
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.profile:hover .profile-kebab { color: var(--text-secondary); }
+
+.dropdown-profile {
+  bottom: calc(100% + 4px);
+  left: var(--space-3);
+  right: var(--space-3);
+  min-width: auto;
+}
+
+/* Workspace ---------------------------------------------------------------- */
 
 .workspace {
   display: flex;
@@ -456,11 +557,86 @@ button:disabled {
   background: var(--bg-app);
 }
 
+/* Welcome state — OWUI Placeholder.svelte:77 (centered, font-primary) */
+.welcome {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6) var(--space-5);
+  font-family: var(--font-primary);
+}
+
+.welcome-inner {
+  width: 100%;
+  max-width: 36rem;                            /* max-w-2xl-ish */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: center;
+}
+
+.welcome-title {
+  font-size: var(--text-3xl);
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+  letter-spacing: -0.015em;
+}
+
+.welcome-sub {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin: 0 0 var(--space-4);
+}
+
+/* Suggestion-card row — Suggestions.svelte:89-118.
+   Transparent bg by default, hover bg-white/5, rounded-xl, line-clamp-1. */
+.welcome-cards {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.welcome-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  width: 100%;
+}
+
+.welcome-card:hover:not(:disabled) {
+  background: var(--bg-hover-soft);
+}
+
+.welcome-card-title {
+  font-weight: 500;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  transition: color 120ms ease;
+}
+
+.welcome-card:hover:not(:disabled) .welcome-card-title { color: var(--text-body); }
+
+.welcome-card-sub {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Tabs --------------------------------------------------------------------- */
+
 .tab-bar {
   display: flex;
   background: var(--bg-app);
   overflow-x: auto;
-  padding: 0 var(--space-2);
+  padding: var(--space-1) var(--space-2) 0;
+  gap: 2px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -468,48 +644,36 @@ button:disabled {
   display: flex;
   align-items: center;
   background: transparent;
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  margin-right: 1px;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  flex-shrink: 0;
+  transition: background 120ms ease;
 }
 
-.tab:hover {
-  background: var(--bg-hover);
-}
-
-.tab.active {
-  background: var(--bg-active);
-}
+.tab:hover:not(.active) { background: var(--bg-hover); }
+.tab.active { background: var(--bg-active); }
 
 .tab-label {
   background: transparent;
-  border: none;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-muted);
   border-radius: 0;
 }
 
-.tab-label:hover:not(:disabled) {
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.tab.active .tab-label {
-  color: var(--text-primary);
-}
+.tab.active .tab-label { color: var(--text-primary); }
 
 .tab-close {
-  background: transparent;
-  border: none;
   padding: var(--space-1) var(--space-2);
-  color: var(--text-muted);
-  border-radius: var(--radius-md);
-  font-size: var(--text-base);
-  line-height: 1;
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  margin-right: 4px;
 }
 
 .tab-close:hover:not(:disabled) {
@@ -520,7 +684,7 @@ button:disabled {
 .tab-action {
   background: transparent;
   color: var(--status-online);
-  border: 1px solid rgba(34, 197, 94, 0.4);
+  border: 1px solid rgba(34, 197, 94, 0.45);
   padding: 0.15rem var(--space-2);
   margin: 0 var(--space-2);
   font-size: var(--text-xs);
@@ -529,14 +693,8 @@ button:disabled {
   cursor: pointer;
 }
 
-.tab-action:hover:not(:disabled) {
-  background: rgba(34, 197, 94, 0.12);
-}
-
-.tab-action:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+.tab-action:hover:not(:disabled) { background: rgba(34, 197, 94, 0.12); }
+.tab-action:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .terminals {
   flex: 1;

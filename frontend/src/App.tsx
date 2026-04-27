@@ -18,6 +18,14 @@ const MODE_LABELS: Record<SessionMode, string> = {
   config: "Config sub",
 };
 
+const MODE_HINTS: Record<SessionMode, string> = {
+  subscription: "Default — uses claude.ai login",
+  api_key: "Billed via API",
+  config: "Log in once · seeds KV for future sessions",
+};
+
+const MODE_ORDER: SessionMode[] = ["subscription", "api_key", "config"];
+
 interface SessionUser {
   sub: string;
   email: string;
@@ -26,17 +34,63 @@ interface SessionUser {
 
 const POLL_INTERVAL_MS = 1500;
 
+function IconPlus() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" fill="none"
+         stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="8" y1="3.5" x2="8" y2="12.5" />
+      <line x1="3.5" y1="8" x2="12.5" y2="8" />
+    </svg>
+  );
+}
+
+function IconChevron() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="none"
+         stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="4,6 8,10 12,6" />
+    </svg>
+  );
+}
+
+function IconKebab() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+      <circle cx="8" cy="3" r="1.3" />
+      <circle cx="8" cy="8" r="1.3" />
+      <circle cx="8" cy="13" r="1.3" />
+    </svg>
+  );
+}
+
+function IconClose() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none"
+         stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <line x1="4" y1="4" x2="12" y2="12" />
+      <line x1="12" y1="4" x2="4" y2="12" />
+    </svg>
+  );
+}
+
+function initials(user: SessionUser): string {
+  const source = (user.name || user.email || "?").trim();
+  const parts = source.split(/[\s@._-]+/).filter(Boolean);
+  const first = parts[0]?.[0] ?? source[0];
+  const second = parts[1]?.[0] ?? "";
+  return (first + second).toUpperCase().slice(0, 2);
+}
+
 export function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Open tabs are session IDs in insertion order. Tabs survive sidebar
-  // re-renders so switching tabs doesn't tear down the WebSocket.
   const [tabs, setTabs] = useState<string[]>([]);
   const [active, setActive] = useState<string | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
 
   useEffect(() => {
     bootstrapAuth()
@@ -44,18 +98,21 @@ export function App() {
       .catch((e) => setAuthError(String(e)));
   }, []);
 
-  // Close the mode dropdown on any outside click — easier than fiddling with
-  // refs and contains() for a one-button menu.
+  // Close any open dropdown on an outside click. Both menus use a `data-menu`
+  // attribute so a single listener can route by which menu is open.
   useEffect(() => {
-    if (!modeMenuOpen) return;
+    if (!modeMenuOpen && !profileMenuOpen) return;
     const close = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && target.closest(".split-button")) return;
+      const root = target?.closest("[data-menu]") as HTMLElement | null;
+      if (root?.dataset.menu === "mode") return;
+      if (root?.dataset.menu === "profile") return;
       setModeMenuOpen(false);
+      setProfileMenuOpen(false);
     };
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
-  }, [modeMenuOpen]);
+  }, [modeMenuOpen, profileMenuOpen]);
 
   async function refresh() {
     try {
@@ -72,8 +129,6 @@ export function App() {
     if (user) void refresh();
   }, [user]);
 
-  // While any open tab is still Pending, poll the list so the Terminal can
-  // transition out of the "waiting" placeholder once its pod is Active.
   useEffect(() => {
     if (!user) return;
     const hasPending = tabs.some((id) => {
@@ -85,8 +140,6 @@ export function App() {
     return () => clearInterval(t);
   }, [tabs, sessions, user]);
 
-  // Close tabs whose sessions disappeared (idle reaper, manual delete from
-  // another browser, etc.).
   useEffect(() => {
     setTabs((prev) => {
       const next = prev.filter((id) => sessions.some((s) => s.id === id));
@@ -152,9 +205,6 @@ export function App() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `save failed: ${res.status}`);
       }
-      // Saved successfully — the config session has done its job. Tear it
-      // down so the user doesn't accidentally re-save a stale blob, and
-      // close the tab.
       await deleteSession(id);
     } catch (e) {
       setError(String(e));
@@ -165,95 +215,137 @@ export function App() {
 
   if (authError) {
     return (
-      <div className="empty-state">
+      <div className="boot-state">
         <pre className="error">auth error: {authError}</pre>
-        <button onClick={() => location.reload()}>retry</button>
+        <button className="btn-secondary" onClick={() => location.reload()}>retry</button>
       </div>
     );
   }
 
   if (!user) {
-    return <div className="empty-state">signing in…</div>;
+    return <div className="boot-state"><span className="boot-text">signing in…</span></div>;
   }
 
   return (
     <div className="shell">
       <aside className="sidebar">
-        <header className="sidebar-header">
+        <div className="sidebar-brand">
           <h1>tank-operator</h1>
-          <div className={`split-button ${modeMenuOpen ? "open" : ""}`}>
+        </div>
+
+        <div className="sidebar-section">
+          <div className="new-row" data-menu="mode">
             <button
-              className="split-main"
+              className="new-row-main"
               onClick={() => createSession("subscription")}
               disabled={busy}
               title="new session (subscription)"
             >
-              + new
+              <span className="row-icon"><IconPlus /></span>
+              <span className="row-label">New session</span>
             </button>
             <button
-              className="split-toggle"
+              className="new-row-toggle"
               onClick={() => setModeMenuOpen((v) => !v)}
               disabled={busy}
-              title="choose auth mode"
               aria-label="choose auth mode"
+              aria-expanded={modeMenuOpen}
             >
-              ▾
+              <IconChevron />
             </button>
             {modeMenuOpen && (
-              <ul className="split-menu" role="menu">
-                <li>
-                  <button onClick={() => createSession("subscription")} disabled={busy}>
-                    {MODE_LABELS.subscription}
-                    <span className="hint">default · uses claude.ai login</span>
-                  </button>
-                </li>
-                <li>
-                  <button onClick={() => createSession("api_key")} disabled={busy}>
-                    {MODE_LABELS.api_key}
-                    <span className="hint">billed via API</span>
-                  </button>
-                </li>
-                <li>
-                  <button onClick={() => createSession("config")} disabled={busy}>
-                    {MODE_LABELS.config}
-                    <span className="hint">log in once · seeds KV for future sessions</span>
-                  </button>
-                </li>
+              <ul className="dropdown dropdown-mode" role="menu">
+                {MODE_ORDER.map((m) => (
+                  <li key={m}>
+                    <button onClick={() => createSession(m)} disabled={busy}>
+                      <span className="dropdown-title">{MODE_LABELS[m]}</span>
+                      <span className="dropdown-hint">{MODE_HINTS[m]}</span>
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
           </div>
-        </header>
+        </div>
+
         {error && <pre className="error">{error}</pre>}
-        <ul className="sessions">
-          {sessions.length === 0 && <li className="empty">no sessions</li>}
-          {sessions.map((s) => {
-            const isOpen = tabs.includes(s.id);
-            return (
-              <li key={s.id} className={isOpen ? "is-open" : ""}>
-                <button className="open" onClick={() => openTab(s.id)}>
-                  <span className="id">{s.id}</span>
-                  <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
-                  <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
-                </button>
-                <button
-                  className="delete"
-                  onClick={() => deleteSession(s.id)}
-                  title="delete session"
-                >
-                  x
-                </button>
+
+        <div className="sidebar-list">
+          <div className="sidebar-section-label">Sessions</div>
+          <ul className="sessions">
+            {sessions.length === 0 && <li className="sessions-empty">no sessions</li>}
+            {sessions.map((s) => {
+              const isOpen = tabs.includes(s.id);
+              return (
+                <li key={s.id} className={isOpen ? "is-open" : ""}>
+                  <button className="session-open" onClick={() => openTab(s.id)}>
+                    <span className="session-id">{s.id}</span>
+                    <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
+                    <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
+                  </button>
+                  <button
+                    className="session-delete"
+                    onClick={() => deleteSession(s.id)}
+                    title="delete session"
+                    aria-label="delete session"
+                  >
+                    <IconClose />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <div className="sidebar-footer" data-menu="profile">
+          <button
+            className="profile"
+            onClick={() => setProfileMenuOpen((v) => !v)}
+            title={user.email}
+          >
+            <span className="avatar" aria-hidden="true">{initials(user)}</span>
+            <span className="profile-text">
+              <span className="profile-name">{user.name || user.email}</span>
+            </span>
+            <span className="profile-kebab"><IconKebab /></span>
+          </button>
+          {profileMenuOpen && (
+            <ul className="dropdown dropdown-profile" role="menu">
+              <li className="dropdown-meta">
+                <span className="dropdown-meta-label">Signed in as</span>
+                <span className="dropdown-meta-value">{user.email}</span>
               </li>
-            );
-          })}
-        </ul>
-        <footer className="sidebar-footer">
-          <span className="email">{user.email}</span>
-          <button onClick={logout}>sign out</button>
-        </footer>
+              <li className="dropdown-divider" role="separator" />
+              <li>
+                <button onClick={logout}>Sign out</button>
+              </li>
+            </ul>
+          )}
+        </div>
       </aside>
+
       <main className="workspace">
         {tabs.length === 0 ? (
-          <div className="empty-state">click <code>+ new</code> or pick a session</div>
+          <div className="welcome">
+            <div className="welcome-inner">
+              <h2 className="welcome-title">tank-operator</h2>
+              <p className="welcome-sub">Spin up a Claude Code session</p>
+              <div className="welcome-cards" role="list">
+                {MODE_ORDER.map((m) => (
+                  <button
+                    key={m}
+                    className="welcome-card"
+                    onClick={() => createSession(m)}
+                    disabled={busy}
+                    role="listitem"
+                  >
+                    <span className="welcome-card-title">{MODE_LABELS[m]}</span>
+                    <span className="welcome-card-sub">{MODE_HINTS[m]}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
         ) : (
           <>
             <nav className="tab-bar">
@@ -281,8 +373,9 @@ export function App() {
                       className="tab-close"
                       onClick={() => closeTab(id)}
                       title="close tab (session keeps running)"
+                      aria-label="close tab"
                     >
-                      ×
+                      <IconClose />
                     </button>
                   </div>
                 );
