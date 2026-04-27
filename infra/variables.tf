@@ -8,6 +8,12 @@ variable "arm_tenant_id" {
   type        = string
 }
 
+variable "github_pat" {
+  description = "GitHub PAT for the github provider. Sourced from KV by the workflow and passed via TF_VAR_github_pat."
+  type        = string
+  sensitive   = true
+}
+
 variable "key_vault_name" {
   description = "Name of the Key Vault that stores the OAuth client secret + cookie secret."
   type        = string

@@ -21,9 +21,6 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
-  # github provider needs this to write the {CLAUDE_CONTAINER,MCP_GITHUB}_CI_CLIENT_ID
-  # Actions variables on this repo via GITHUB_TOKEN.
-  actions: write
 
 env:
   TF_INPUT: "false"
@@ -33,9 +30,6 @@ env:
   ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
   TF_VAR_arm_subscription_id: ${{ vars.ARM_SUBSCRIPTION_ID }}
   TF_VAR_arm_tenant_id: ${{ vars.ARM_TENANT_ID }}
-  # github provider auth — github_actions_variable resources need
-  # actions:write on this repo, which the default token has.
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   tofu:
@@ -52,6 +46,13 @@ jobs:
           client-id: ${{ vars.ARM_CLIENT_ID }}
           tenant-id: ${{ vars.ARM_TENANT_ID }}
           subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: Fetch github-pat from Key Vault
+        id: secrets
+        run: |
+          GITHUB_PAT=$(az keyvault secret show --vault-name romaine-kv --name github-pat --query value -o tsv)
+          echo "::add-mask::$GITHUB_PAT"
+          echo "github_pat=$GITHUB_PAT" >> $GITHUB_OUTPUT
 
       - name: tofu init
         working-directory: infra
@@ -72,9 +73,13 @@ jobs:
 
       - name: tofu plan
         working-directory: infra
+        env:
+          TF_VAR_github_pat: ${{ steps.secrets.outputs.github_pat }}
         run: tofu plan -out=tfplan
 
       - name: tofu apply
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         working-directory: infra
+        env:
+          TF_VAR_github_pat: ${{ steps.secrets.outputs.github_pat }}
         run: tofu apply -auto-approve tfplan

@@ -12,9 +12,11 @@ provider "azuread" {
 
 provider "random" {}
 
-# `owner` set explicitly so github_actions_variable resources land on the
-# right org. Auth is via GITHUB_TOKEN env var (the workflow exposes the
-# default GITHUB_TOKEN, which has actions:write on this repo).
+# Repo-scoped Actions variables require admin perms that the default
+# GITHUB_TOKEN doesn't have. Use the same `github-pat` PAT in KV that
+# infra-bootstrap uses; the workflow fetches it and exports it as
+# TF_VAR_github_pat.
 provider "github" {
   owner = "nelsong6"
+  token = var.github_pat
 }
