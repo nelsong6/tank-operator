@@ -12,6 +12,7 @@ the stdio variant; the diff is just the transport.
 
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from mcp.server.fastmcp import FastMCP
 from starlette.applications import Starlette
@@ -43,10 +44,23 @@ def build_app() -> Starlette:
     async def healthz(_: Request) -> Response:
         return Response("ok", media_type="text/plain")
 
-    return Starlette(routes=[
-        Route("/healthz", healthz),
-        Mount("/", app=mcp.streamable_http_app()),
-    ])
+    # Starlette's Mount doesn't forward lifespan events to the inner app, so
+    # FastMCP's session_manager.run() — which sets up the anyio task group
+    # the streamable-http handler depends on — never fires when we mount it.
+    # Wire the run() context into the outer app's lifespan ourselves; without
+    # this every request 500s with "Task group is not initialized".
+    @asynccontextmanager
+    async def lifespan(_app: Starlette):
+        async with mcp.session_manager.run():
+            yield
+
+    return Starlette(
+        routes=[
+            Route("/healthz", healthz),
+            Mount("/", app=mcp.streamable_http_app()),
+        ],
+        lifespan=lifespan,
+    )
 
 
 def main() -> None:
