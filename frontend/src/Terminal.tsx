@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import "./fonts.css";
 
 interface Props {
   sessionId: string;
@@ -32,7 +33,11 @@ export function Terminal({ sessionId, status, visible }: Props) {
 
     const term = new XTerm({
       cursorBlink: true,
-      fontFamily: 'ui-monospace, "Cascadia Code", "Consolas", monospace',
+      // "Symbols Nerd Font Mono" is loaded last as a fallback so private-use-area
+      // glyphs (Powerline arrows, branded marks, status icons) render instead of
+      // the U+FFFD replacement diamond. Latin still resolves to the earlier
+      // monospace fonts via per-glyph CSS font fallback.
+      fontFamily: 'ui-monospace, "Cascadia Code", "Consolas", "Symbols Nerd Font Mono", monospace',
       fontSize: 13,
       theme: { background: "#0e0e10", foreground: "#e6e6e6" },
     });
