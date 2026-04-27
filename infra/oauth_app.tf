@@ -11,13 +11,6 @@
 # doesn't record ownership and `Application.ReadWrite.OwnedBy` returns 403
 # on any follow-up Graph call.
 
-data "azurerm_key_vault" "kv" {
-  name                = var.key_vault_name
-  resource_group_name = var.key_vault_resource_group
-}
-
-data "azuread_client_config" "current" {}
-
 resource "azuread_application" "oauth" {
   display_name = "tank-operator-oauth"
   # Personal MSA accounts (e.g. outlook.com) need this; AzureADMyOrg-only apps
@@ -67,13 +60,13 @@ resource "random_password" "jwt_secret" {
 resource "azurerm_key_vault_secret" "oauth_client_id" {
   name         = "tank-operator-oauth-client-id"
   value        = azuread_application.oauth.client_id
-  key_vault_id = data.azurerm_key_vault.kv.id
+  key_vault_id = data.azurerm_key_vault.main.id
 }
 
 resource "azurerm_key_vault_secret" "jwt_secret" {
   name         = "tank-operator-jwt-secret"
   value        = random_password.jwt_secret.result
-  key_vault_id = data.azurerm_key_vault.kv.id
+  key_vault_id = data.azurerm_key_vault.main.id
 }
 
 # Comma-joined list — the backend splits on `,` and lowercases on startup.
@@ -81,5 +74,5 @@ resource "azurerm_key_vault_secret" "jwt_secret" {
 resource "azurerm_key_vault_secret" "oauth_allowed_emails" {
   name         = "tank-operator-oauth-allowed-emails"
   value        = join(",", var.allowed_emails)
-  key_vault_id = data.azurerm_key_vault.kv.id
+  key_vault_id = data.azurerm_key_vault.main.id
 }

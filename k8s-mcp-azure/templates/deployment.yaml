@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-azure
+  namespace: mcp-azure
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-azure
+  template:
+    metadata:
+      labels:
+        app: mcp-azure
+        # Triggers the Azure workload-identity webhook to project the SA
+        # token + mount the federated token file. AZURE_CLIENT_ID /
+        # AZURE_TENANT_ID we set ourselves from the ExternalSecret.
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: mcp-azure
+      containers:
+        - name: azure-mcp
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Image entrypoint is `./server-binary server start` — args here
+          # are flags only.
+          # --outgoing-auth-strategy UseHostingEnvironmentIdentity: server
+          # uses its OWN identity (the federated UAMI) for upstream Azure
+          # calls, not the caller's. This is the inverse of OBO.
+          # --dangerously-disable-http-incoming-auth: skip the server's
+          # built-in Entra JWT validation. kube-rbac-proxy fronts us with
+          # K8s SA token auth instead, and binding 127.0.0.1 means nothing
+          # can reach this listener bypassing the proxy.
+          args:
+            - --transport
+            - http
+            - --outgoing-auth-strategy
+            - UseHostingEnvironmentIdentity
+            - --dangerously-disable-http-incoming-auth
+          ports:
+            - name: upstream
+              containerPort: {{ .Values.upstreamPort }}
+          envFrom:
+            # AZURE_CLIENT_ID + AZURE_TENANT_ID from KV via ExternalSecret.
+            - secretRef:
+                name: mcp-azure-config
+          env:
+            # Loopback-only — defense in depth against any caller who knows
+            # the pod IP and tries to bypass the kube-rbac-proxy by hitting
+            # 8080 directly. The disable-incoming-auth path additionally
+            # rejects wildcard hosts (+, *, 0.0.0.0) regardless of
+            # ALLOW_INSECURE_EXTERNAL_BINDING — see ServiceStartCommand.cs
+            # InitializeListingUrls — so localhost is required, not just
+            # preferable.
+            - name: ASPNETCORE_URLS
+              value: http://localhost:{{ .Values.upstreamPort }}
+            # Path the WI webhook projects the federated token to.
+            - name: AZURE_FEDERATED_TOKEN_FILE
+              value: /var/run/secrets/azure/tokens/azure-identity-token
+            - name: AZURE_AUTHORITY_HOST
+              value: https://login.microsoftonline.com/
+          readinessProbe:
+            # tcpSocket can't target loopback (probes run from the kubelet's
+            # netns and hit the pod IP). exec runs inside the container so
+            # localhost works. nc -z just checks the listener accepts a
+            # TCP connection — equivalent intent to tcpSocket but reachable.
+            exec:
+              command: ["nc", "-z", "localhost", "{{ .Values.upstreamPort }}"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        - name: kube-rbac-proxy
+          image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          args:
+            - --insecure-listen-address=0.0.0.0:{{ .Values.proxy.port }}
+            - --upstream=http://127.0.0.1:{{ .Values.upstreamPort }}/
+            - --config-file=/etc/kube-rbac-proxy/config.yaml
+            - --v=2
+          ports:
+            - name: proxy
+              containerPort: {{ .Values.proxy.port }}
+          volumeMounts:
+            - name: proxy-config
+              mountPath: /etc/kube-rbac-proxy
+              readOnly: true
+          resources:
+            {{- toYaml .Values.proxyResources | nindent 12 }}
+      volumes:
+        - name: proxy-config
+          configMap:
+            name: kube-rbac-proxy

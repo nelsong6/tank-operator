@@ -5,9 +5,16 @@ on:
     branches: [main]
     paths-ignore:
       - 'k8s/**'
+      - 'k8s-mcp-azure/**'
+      - 'k8s-mcp-github/**'
+      - 'k8s-sessions/**'
+      - 'claude-container/**'
+      - 'mcp-servers/**'
       - 'infra/**'
       - 'README.md'
       - '.github/workflows/tofu.yml'
+      - '.github/workflows/claude-container-build.yml'
+      - '.github/workflows/mcp-github-build.yml'
   workflow_dispatch:
 
 permissions:

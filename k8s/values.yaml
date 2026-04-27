@@ -38,8 +38,13 @@ externalSecret:
   storeName: romaine-kv
   storeKind: ClusterSecretStore
   refreshInterval: 1h
-  # Aggregate of env vars the session container needs at startup. The github-*
-  # keys are read by the github MCP server inside claude-container.
+  # Aggregate of env vars the session container needs at startup. The set of
+  # MCP servers wired into the session pod is defined by claude-container/mcp.json
+  # in this repo (baked into the image at build time); those MCP servers
+  # themselves run in-cluster (k8s-mcp-azure/, k8s-mcp-github/) and read their
+  # own credentials from KV via per-server ExternalSecrets, NOT from this
+  # secret. The github-* keys here are unused by the new HTTP MCP path and
+  # can be pruned once the in-container github CLI no longer needs them.
   #
   # Both auth paths are bundled in every pod; the orchestrator stamps
   # TANK_SESSION_MODE on each Deployment to pick which one the bootstrap uses:

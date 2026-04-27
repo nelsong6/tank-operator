@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "azure": {
+      "type": "http",
+      "url": "http://mcp-azure.mcp-azure.svc:80/",
+      "headers": {
+        "Authorization": "Bearer ${MCP_AZURE_BEARER}"
+      }
+    },
+    "github": {
+      "type": "http",
+      "url": "http://mcp-github.mcp-github.svc:80/",
+      "headers": {
+        "Authorization": "Bearer ${MCP_GITHUB_BEARER}"
+      }
+    },
+    "platform": {
+      "command": "platform-mcp"
+    }
+  }
+}

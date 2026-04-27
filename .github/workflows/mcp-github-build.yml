@@ -1,0 +1,45 @@
+name: Build mcp-github image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mcp-servers/github/**'
+      - '.github/workflows/mcp-github-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mcp-github-build
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (mcp-github CI SP)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.MCP_GITHUB_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name romainecr
+
+      - name: Build + push
+        working-directory: mcp-servers/github
+        run: |
+          TAG=$(git rev-parse --short HEAD)
+          docker build \
+            -t romainecr.azurecr.io/mcp-github:$TAG \
+            -t romainecr.azurecr.io/mcp-github:latest .
+          docker push romainecr.azurecr.io/mcp-github:$TAG
+          docker push romainecr.azurecr.io/mcp-github:latest
+          echo "### Pushed romainecr.azurecr.io/mcp-github:$TAG" >> $GITHUB_STEP_SUMMARY

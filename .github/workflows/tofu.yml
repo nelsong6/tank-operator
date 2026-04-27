@@ -21,6 +21,9 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
+  # github provider needs this to write the {CLAUDE_CONTAINER,MCP_GITHUB}_CI_CLIENT_ID
+  # Actions variables on this repo via GITHUB_TOKEN.
+  actions: write
 
 env:
   TF_INPUT: "false"
@@ -30,6 +33,9 @@ env:
   ARM_SUBSCRIPTION_ID: ${{ vars.ARM_SUBSCRIPTION_ID }}
   TF_VAR_arm_subscription_id: ${{ vars.ARM_SUBSCRIPTION_ID }}
   TF_VAR_arm_tenant_id: ${{ vars.ARM_TENANT_ID }}
+  # github provider auth — github_actions_variable resources need
+  # actions:write on this repo, which the default token has.
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   tofu:

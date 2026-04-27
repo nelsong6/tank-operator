@@ -35,7 +35,11 @@ log = logging.getLogger(__name__)
 #                                   official-marketplace auto-install flags +
 #                                   pre-approved set of project-level MCP
 #                                   servers (read from /workspace/.mcp.json so
-#                                   it stays correct as the image evolves)
+#                                   it stays correct as the image evolves; the
+#                                   file itself is baked into claude-container
+#                                   from claude-container/mcp.json in this
+#                                   repo, along with the env-var contract its
+#                                   servers expect)
 #   ~/.claude/.credentials.json   — only in subscription mode: the OAuth tokens
 #                                   captured from a logged-in machine, written
 #                                   here so the TUI launches as a logged-in

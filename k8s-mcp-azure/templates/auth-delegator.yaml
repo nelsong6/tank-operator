@@ -1,0 +1,15 @@
+# kube-rbac-proxy calls the K8s API's TokenReview endpoint to validate
+# incoming bearer SA tokens. system:auth-delegator is the standard cluster
+# role for that — grants the SubjectAccessReviews/TokenReviews API access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-azure-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: mcp-azure
+    namespace: mcp-azure

@@ -5,6 +5,23 @@ demand. "+ button → fresh agent shell, terminal opens in a browser tab, killed
 closes." See [issue #1](https://github.com/nelsong6/tank-operator/issues/1) for the full
 design and rationale.
 
+The `claude-container` image is built from `claude-container/` in this repo
+(`Dockerfile`, `mcp.json`, `entrypoint.sh`, plus a bundled `platform-mcp/`
+MCP server) and pushed to `romainecr.azurecr.io/claude-container:latest` by
+[claude-container-build.yml](.github/workflows/claude-container-build.yml).
+
+The two HTTP MCP servers it talks to also live here:
+
+- `k8s-mcp-azure/` — Helm chart wrapping Microsoft's `azure-mcp` image, fronted by kube-rbac-proxy.
+- `k8s-mcp-github/` + `mcp-servers/github/` — chart + Python source for a custom GitHub App-backed MCP server. Built by [mcp-github-build.yml](.github/workflows/mcp-github-build.yml).
+
+UAMIs, federated credentials, and ACR push SPs for all of the above are
+managed under `infra/` (`mcp.tf`, `mcp-server/`, `claude_container_ci.tf`,
+`mcp_github_ci.tf`). Shared cluster infrastructure (the AKS cluster itself,
+the ACR, the Key Vault) lives in
+[infra-bootstrap](https://github.com/nelsong6/infra-bootstrap) and is
+referenced here as data sources.
+
 ## Repo layout
 
 ```

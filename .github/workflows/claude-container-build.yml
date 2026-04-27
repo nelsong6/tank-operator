@@ -1,0 +1,44 @@
+name: Build claude-container image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'claude-container/**'
+      - '.github/workflows/claude-container-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: claude-container-build
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (claude-container CI SP)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.CLAUDE_CONTAINER_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name romainecr
+
+      - name: Build + push
+        run: |
+          TAG=$(git rev-parse --short HEAD)
+          docker build -f claude-container/Dockerfile \
+            -t romainecr.azurecr.io/claude-container:$TAG \
+            -t romainecr.azurecr.io/claude-container:latest .
+          docker push romainecr.azurecr.io/claude-container:$TAG
+          docker push romainecr.azurecr.io/claude-container:latest
+          echo "### Pushed romainecr.azurecr.io/claude-container:$TAG" >> $GITHUB_STEP_SUMMARY
