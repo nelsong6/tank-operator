@@ -2,206 +2,84 @@
 
 Why this exists: Claude Code's subscription auth uses an OAuth refresh token
 that rotates on every use (single-use refresh tokens, RFC 6749 §10.4 best
-practice). When the refresh token is replicated into N ephemeral session pods,
-they race each other to refresh — first pod's call rotates R1→R2, every other
-pod is now holding an invalidated R1. The naive fix (copy R2 back to KV when a
-pod refreshes) only papers over the race; with concurrent sessions, two pods
-calling refresh in the same second still collide.
+practice). The real refresh token must never enter session pods — if it did,
+N pods would race to refresh and invalidate each other.
 
-Design: there is exactly one thing in the system that ever calls
-platform.claude.com's token endpoint with the real refresh token — this
-gateway, running in the orchestrator pod (singleton, replicas=1). Session pods
-reach it via /etc/hosts mapping platform.claude.com → this service's ClusterIP
-plus a self-signed CA installed in the pod's trust bundle (NODE_EXTRA_CA_CERTS).
-From claude's perspective it's still talking to Anthropic; really it's talking
-to us, and we hand it a fresh access token without ever giving it the
-underlying refresh token.
+Design: this gateway is a stateless reader. The credentials.json blob lives
+in a K8s Secret (synced from Key Vault by ExternalSecrets), mounted into
+this pod as a file. Session pods reach the gateway via /etc/hosts mapping
+platform.claude.com → this service's ClusterIP plus a self-signed CA
+installed in their trust bundle. From claude's perspective it's still
+talking to Anthropic; really it's talking to us, and we hand it the current
+access token without ever giving it the refresh token.
 
-Single-flight: concurrent callers share one in-flight refresh against Anthropic
-via an asyncio.Lock with an inside-lock cache re-check. N pods refreshing at
-the same wall-clock instant → one outbound call, all N callers get the same
-cached access token back.
+Where rotation happens: a separate CronJob (see refresh_credentials.py)
+is the *only* writer of the credentials. It reads the current refresh
+token from KV, calls platform.claude.com, writes the rotated blob back to
+KV. ESO mirrors KV → K8s Secret → kubelet → this pod's mounted file.
+The gateway never makes outbound calls.
 
-State: the rotated refresh token is persisted to a K8s Secret on each rotation
-(not back to Key Vault — KV is the cold-storage seed; the live writer is here).
-The gateway re-reads the Secret on startup so a pod restart picks up where it
-left off.
+Why split rotation from reading: ESO treats KV as the source of truth, so
+any in-process write here would race against ESO's reconciliation. Splitting
+the writer (CronJob, scheduled, singleton via concurrencyPolicy:Forbid) from
+the readers (gateway replicas, stateless) makes the data flow one-way:
+KV → K8s Secret → mounted file → HTTP response. No locks, no caches, safe
+to scale out.
 """
 from __future__ import annotations
 
-import asyncio
-import base64
 import json
 import logging
 import os
-import time
 from typing import Any
 
-import httpx
 from fastapi import HTTPException, Request
-from kubernetes_asyncio import client
 
 log = logging.getLogger(__name__)
 
-# Hardcoded into Claude Code's bundled JS. Two distinct client_ids ship in
-# the bundle: 22422756-... is paired with the legacy console.anthropic.com
-# endpoint, 9d1c250a-... with platform.claude.com (our token URL). Easy to
-# get wrong — both look plausible by grep alone. Tied here by the
-# MANUAL_REDIRECT_URL/TOKEN_URL pairing in cli.js.
-ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 ANTHROPIC_TOKEN_HOST = "platform.claude.com"
 
 # What the gateway returns to in-pod claude as the refresh_token field. The
 # pod will write this back to .credentials.json and POST it back to us on the
-# next refresh; we ignore it and use our real refresh from the K8s Secret.
+# next refresh; we ignore it and read the real one from the mounted file.
 # Keeping it constant + obviously-sentinel makes accidental leaks easy to
 # notice in logs.
 PLACEHOLDER_REFRESH_TOKEN = "managed-by-tank-operator"
 
-# Secret holding the JSON blob originally produced by `cat ~/.claude/.credentials.json`
-# on a logged-in machine. Lives in the orchestrator namespace; session pods
-# can NOT read it. Seeded once by ExternalSecret from KV; thereafter rewritten
-# by this gateway on each rotation.
-CREDENTIALS_NAMESPACE = os.environ.get("CLAUDE_CREDENTIALS_NAMESPACE", "tank-operator")
-CREDENTIALS_SECRET = os.environ.get("CLAUDE_CREDENTIALS_SECRET", "claude-code-credentials")
-CREDENTIALS_KEY = os.environ.get("CLAUDE_CREDENTIALS_KEY", "claude-code-credentials")
+# Path to the credentials.json blob mounted from the K8s Secret. Kubelet
+# atomically swaps the file when the Secret changes (via symlink rename),
+# so a concurrent read either sees the old blob or the new one — never a
+# torn write. We re-open + re-read on every request rather than caching to
+# pick up rotations within seconds of ESO syncing them in.
+CREDENTIALS_FILE = os.environ.get(
+    "CLAUDE_CREDENTIALS_FILE", "/etc/claude-credentials/credentials.json"
+)
+
+# Default access-token TTL stamped into responses when the blob doesn't
+# carry an expiry. claude only uses this hint for cache invalidation; the
+# next request re-reads the file anyway, so an over-estimate just means
+# claude trusts a stale token a bit longer before re-asking us.
+DEFAULT_EXPIRES_IN_SECONDS = 1800
 
 
-class OAuthGateway:
-    """Single-flight OAuth refresh proxy.
+def _load_blob() -> dict[str, Any]:
+    """Read and parse the mounted credentials.json. Raises on any error."""
+    with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    The cache holds the most recent (access_token, expires_at) tuple. On a
-    request, if the cached token has > REFRESH_SKEW seconds of life, return
-    it; otherwise acquire the lock, re-check (someone else may have just
-    refreshed), and if still stale, perform an outbound refresh.
-    """
 
-    # Refresh REFRESH_SKEW seconds before expiry to give callers a token that
-    # won't expire mid-flight. Anthropic access tokens are typically ~1h;
-    # 60s headroom is plenty.
-    REFRESH_SKEW = 60.0
-
-    def __init__(self, k8s_api: client.ApiClient) -> None:
-        self._core = client.CoreV1Api(k8s_api)
-        self._lock = asyncio.Lock()
-        self._access_token: str | None = None
-        self._access_expires_at: float = 0.0
-        # Mirrors CREDENTIALS_KEY in the Secret; loaded on first use.
-        self._refresh_token: str | None = None
-        # Remember the original credentials.json shape so we can preserve it
-        # on rotation (field names like `accessToken`/`refreshToken` may be
-        # nested under a top-level key like `claudeAiOauth` — we don't want
-        # to assume the schema).
-        self._credentials_blob: dict[str, Any] | None = None
-
-    async def _load_secret(self) -> None:
-        """Load the credentials JSON from the K8s Secret into memory."""
-        secret = await self._core.read_namespaced_secret(
-            name=CREDENTIALS_SECRET, namespace=CREDENTIALS_NAMESPACE
-        )
-        raw = secret.data.get(CREDENTIALS_KEY)
-        if not raw:
-            raise RuntimeError(
-                f"secret {CREDENTIALS_NAMESPACE}/{CREDENTIALS_SECRET} missing key {CREDENTIALS_KEY}"
-            )
-        decoded = base64.b64decode(raw).decode("utf-8")
-        blob = json.loads(decoded)
-        self._credentials_blob = blob
-        # Probe a few likely field paths. Claude Code's credentials.json has
-        # historically been `{"claudeAiOauth": {"accessToken": ..., "refreshToken": ...}}`,
-        # but this is private API and could change shape. Future-proof by
-        # walking the blob for the first refresh-token-shaped field.
-        self._refresh_token = _extract_refresh_token(blob)
-        if not self._refresh_token:
-            raise RuntimeError(
-                f"could not find refresh token in {CREDENTIALS_SECRET} — JSON shape unrecognized"
-            )
-
-    async def _persist_rotation(self, new_access: str, new_refresh: str, expires_in: int) -> None:
-        """Patch the credentials Secret with the rotated tokens."""
-        assert self._credentials_blob is not None
-        updated = _patch_credentials_blob(
-            self._credentials_blob, new_access, new_refresh, expires_in
-        )
-        # base64-encode the JSON for the Secret data field.
-        encoded = base64.b64encode(json.dumps(updated).encode("utf-8")).decode("ascii")
-        await self._core.patch_namespaced_secret(
-            name=CREDENTIALS_SECRET,
-            namespace=CREDENTIALS_NAMESPACE,
-            body={"data": {CREDENTIALS_KEY: encoded}},
-        )
-        self._credentials_blob = updated
-        self._refresh_token = new_refresh
-
-    async def _refresh_against_anthropic(self) -> tuple[str, int]:
-        """Call platform.claude.com to refresh, persist rotation, return access+ttl."""
-        assert self._refresh_token is not None
-        body = {
-            "grant_type": "refresh_token",
-            "refresh_token": self._refresh_token,
-            "client_id": ANTHROPIC_CLIENT_ID,
-        }
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            resp = await http.post(
-                ANTHROPIC_TOKEN_URL,
-                json=body,
-                headers={"Content-Type": "application/json"},
-            )
-        if resp.status_code != 200:
-            log.error(
-                "oauth refresh failed: status=%s body=%s",
-                resp.status_code,
-                resp.text[:500],
-            )
-            resp.raise_for_status()
-        data = resp.json()
-        new_access = data["access_token"]
-        new_refresh = data.get("refresh_token") or self._refresh_token
-        expires_in = int(data.get("expires_in", 3600))
-        await self._persist_rotation(new_access, new_refresh, expires_in)
-        return new_access, expires_in
-
-    async def get_token(self) -> tuple[str, int]:
-        """Return (access_token, expires_in_seconds), refreshing if needed.
-
-        Single-flight: if multiple coroutines call concurrently while the
-        cache is stale, only one performs the outbound refresh; the rest
-        wait on the lock and read the freshly-cached token.
-        """
-        now = time.monotonic()
-        if self._access_token and now < self._access_expires_at - self.REFRESH_SKEW:
-            return self._access_token, int(self._access_expires_at - now)
-        async with self._lock:
-            now = time.monotonic()
-            if self._access_token and now < self._access_expires_at - self.REFRESH_SKEW:
-                return self._access_token, int(self._access_expires_at - now)
-            if self._refresh_token is None:
-                await self._load_secret()
-            new_access, expires_in = await self._refresh_against_anthropic()
-            self._access_token = new_access
-            self._access_expires_at = time.monotonic() + expires_in
-            return new_access, expires_in
-
-    async def get_bootstrap_blob(self) -> dict[str, Any]:
-        """Return a credentials.json blob for a fresh session pod.
-
-        Same shape as the original .credentials.json from KV (preserves
-        whatever nesting and extra fields claude expects), but with the
-        access token replaced by a fresh one from the cache and the
-        refresh token replaced by the placeholder. The pod's bootstrap
-        writes this directly to /root/.claude/.credentials.json.
-        """
-        # Ensures we have a fresh access token AND that _credentials_blob
-        # is populated (get_token's refresh path loads the secret).
-        access_token, expires_in = await self.get_token()
-        assert self._credentials_blob is not None
-        return _patch_credentials_blob(
-            self._credentials_blob,
-            new_access=access_token,
-            new_refresh=PLACEHOLDER_REFRESH_TOKEN,
-            expires_in=expires_in,
-        )
+def _extract_access_token(blob: dict[str, Any]) -> str | None:
+    """Walk the blob looking for the access token field, regardless of nesting."""
+    if not isinstance(blob, dict):
+        return None
+    for key, value in blob.items():
+        if key in ("accessToken", "access_token") and isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            found = _extract_access_token(value)
+            if found:
+                return found
+    return None
 
 
 def _extract_refresh_token(blob: dict[str, Any]) -> str | None:
@@ -227,6 +105,8 @@ def _patch_credentials_blob(
     the first occurrence we find of each known field name; the assumption
     is that .credentials.json doesn't contain multiple distinct token sets.
     """
+    import time
+
     expires_at_ms = int((time.time() + expires_in) * 1000)
     out = json.loads(json.dumps(blob))  # cheap deep copy
 
@@ -253,20 +133,16 @@ def _patch_credentials_blob(
     return out
 
 
-# --- HTTP handler ---------------------------------------------------------
+# --- HTTP handlers --------------------------------------------------------
 
-# Used when the gateway has not yet been initialized in the FastAPI app's
-# lifespan. The `claude_oauth_gateway` attribute is attached to the app
-# instance in api.py's lifespan handler.
 
 async def handle_oauth_token(request: Request) -> dict[str, Any]:
     """Implements the platform.claude.com /v1/oauth/token contract.
 
     Accepts whatever JSON body the caller sends — we ignore the
-    refresh_token they provide and use our own. Returns a real access
-    token (refreshed as needed) plus a placeholder refresh_token so the
-    pod's .credentials.json gets rewritten with the placeholder, not a
-    real refresh token.
+    refresh_token they provide and use our own. Returns the current access
+    token plus a placeholder refresh_token so the pod's .credentials.json
+    gets rewritten with the placeholder, not a real refresh token.
     """
     # Defense-in-depth: the OAuth endpoint is reachable on the orchestrator's
     # public port too (same FastAPI app), so reject requests that didn't come
@@ -276,25 +152,28 @@ async def handle_oauth_token(request: Request) -> dict[str, Any]:
     if host != ANTHROPIC_TOKEN_HOST:
         raise HTTPException(status_code=404, detail="not found")
 
-    # We don't even need to parse the body — the gateway's response is
-    # determined by its own state, not the caller's input. But validate it
-    # parses to surface bad clients clearly in logs.
+    # We don't even need to parse the body — the response is determined by
+    # the mounted file, not the caller's input. But validate it parses to
+    # surface bad clients clearly in logs.
     try:
         await request.json()
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="invalid JSON body")
 
-    gateway: OAuthGateway = request.app.state.oauth_gateway
     try:
-        access_token, expires_in = await gateway.get_token()
+        blob = _load_blob()
+        access_token = _extract_access_token(blob)
     except Exception:
-        log.exception("oauth gateway refresh failed")
-        raise HTTPException(status_code=502, detail="upstream refresh failed")
+        log.exception("oauth gateway: could not read credentials file")
+        raise HTTPException(status_code=502, detail="credentials unavailable")
+    if not access_token:
+        log.error("oauth gateway: credentials blob has no access token field")
+        raise HTTPException(status_code=502, detail="credentials malformed")
 
     return {
         "access_token": access_token,
         "refresh_token": PLACEHOLDER_REFRESH_TOKEN,
-        "expires_in": expires_in,
+        "expires_in": DEFAULT_EXPIRES_IN_SECONDS,
         "token_type": "Bearer",
     }
 
@@ -310,9 +189,20 @@ async def handle_bootstrap_blob(request: Request) -> dict[str, Any]:
     host = (request.headers.get("host") or "").split(":")[0].lower()
     if host != ANTHROPIC_TOKEN_HOST:
         raise HTTPException(status_code=404, detail="not found")
-    gateway: OAuthGateway = request.app.state.oauth_gateway
+
     try:
-        return await gateway.get_bootstrap_blob()
+        blob = _load_blob()
+        access_token = _extract_access_token(blob)
     except Exception:
-        log.exception("oauth gateway bootstrap blob failed")
-        raise HTTPException(status_code=502, detail="upstream refresh failed")
+        log.exception("oauth gateway: could not read credentials file")
+        raise HTTPException(status_code=502, detail="credentials unavailable")
+    if not access_token:
+        log.error("oauth gateway: credentials blob has no access token field")
+        raise HTTPException(status_code=502, detail="credentials malformed")
+
+    return _patch_credentials_blob(
+        blob,
+        new_access=access_token,
+        new_refresh=PLACEHOLDER_REFRESH_TOKEN,
+        expires_in=DEFAULT_EXPIRES_IN_SECONDS,
+    )

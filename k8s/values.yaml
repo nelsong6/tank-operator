@@ -43,6 +43,27 @@ ingress:
 oauthGateway:
   serviceHost: claude-oauth-gateway.tank-operator.svc.cluster.local
 
+# Credential refresher: a CronJob that calls platform.claude.com on a fixed
+# schedule with the stored refresh token, then writes the rotated blob
+# back to KV. The orchestrator's OAuth gateway is read-only — this is the
+# *only* thing in the system that mutates the credentials. See
+# templates/credential-refresher.yaml for the rationale and infra/
+# credential_refresher.tf for the UAMI + KV role assignment.
+credentialRefresher:
+  name: claude-credentials-refresher
+  serviceAccount: claude-credentials-refresher
+  configSecret: claude-credentials-refresher-config
+  # Anthropic access tokens are typically ~1h; 30m gives one retry buffer
+  # before sessions start booting with expired tokens. Tune down only if
+  # you've observed shorter access-token TTLs in refresh responses.
+  schedule: "*/30 * * * *"
+  keyVaultUrl: https://romaine-kv.vault.azure.net/
+  # Published to KV by infra/credential_refresher.tf (Terraform). The
+  # client_id syncs into AZURE_CLIENT_ID via the ExternalSecret in
+  # templates/credential-refresher.yaml.
+  kvClientIdKey: claude-credentials-refresher-mi-client-id
+  kvTenantIdKey: mcp-tenant-id
+
 externalSecret:
   storeName: romaine-kv
   storeKind: ClusterSecretStore

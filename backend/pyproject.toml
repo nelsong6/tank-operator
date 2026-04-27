@@ -9,6 +9,11 @@ dependencies = [
   "kubernetes-asyncio>=31.1.0",
   "pyjwt[crypto]>=2.9.0",
   "httpx>=0.27",
+  # Used only by the refresh_credentials CronJob entrypoint; in the
+  # orchestrator pod they sit unused. Kept here (vs. a separate package)
+  # so the CronJob can run the same image without a second build target.
+  "azure-identity>=1.19",
+  "azure-keyvault-secrets>=4.9",
 ]
 
 [build-system]

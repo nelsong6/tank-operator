@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
 from .exec_proxy import bridge
-from .oauth_gateway import OAuthGateway, handle_bootstrap_blob, handle_oauth_token
+from .oauth_gateway import handle_bootstrap_blob, handle_oauth_token
 from .sessions import (
     DEFAULT_SESSION_MODE,
     SESSION_MODES,
@@ -28,9 +28,6 @@ sessions = SessionManager()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await sessions.startup()
-    # SessionManager owns the K8s ApiClient, so reuse it for the OAuth gateway
-    # rather than opening a second one.
-    app.state.oauth_gateway = OAuthGateway(sessions._api)  # type: ignore[arg-type]
     try:
         yield
     finally:
@@ -65,7 +62,7 @@ async def oauth_token(request: Request) -> dict[str, object]:
         /etc/hosts override mapping platform.claude.com to the orchestrator
         service IP, so the Host header arrives as platform.claude.com and
         the gateway answers.
-    See oauth_gateway.py for the rationale and single-flight caching design.
+    See oauth_gateway.py for the design rationale.
     """
     return await handle_oauth_token(request)
 

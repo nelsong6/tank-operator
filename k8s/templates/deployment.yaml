@@ -41,12 +41,8 @@ spec:
               value: {{ .Values.session.reaperIntervalSeconds | quote }}
             - name: TANK_OPERATOR_STATIC_DIR
               value: /app/static
-            - name: CLAUDE_CREDENTIALS_NAMESPACE
-              value: {{ .Values.namespaces.orchestrator | quote }}
-            - name: CLAUDE_CREDENTIALS_SECRET
-              value: {{ .Values.externalSecret.claudeCredentials.secretName | quote }}
-            - name: CLAUDE_CREDENTIALS_KEY
-              value: {{ .Values.externalSecret.claudeCredentials.secretKey | quote }}
+            - name: CLAUDE_CREDENTIALS_FILE
+              value: /etc/claude-credentials/{{ .Values.externalSecret.claudeCredentials.secretKey }}
             - name: CLAUDE_OAUTH_GATEWAY_HOST
               value: {{ .Values.oauthGateway.serviceHost | quote }}
           envFrom:
@@ -55,6 +51,9 @@ spec:
           volumeMounts:
             - name: oauth-gateway-tls
               mountPath: /etc/oauth-gateway-tls
+              readOnly: true
+            - name: claude-credentials
+              mountPath: /etc/claude-credentials
               readOnly: true
           readinessProbe:
             httpGet:
@@ -73,6 +72,14 @@ spec:
           secret:
             secretName: claude-oauth-leaf
             optional: true  # cert-manager hasn't issued yet on first install
+        - name: claude-credentials
+          secret:
+            # ESO-managed; the credential-refresh CronJob writes rotations
+            # to KV and ESO mirrors them here within ~1 minute. Marked
+            # optional so first install doesn't crash-loop the pod before
+            # ESO has synced.
+            secretName: {{ .Values.externalSecret.claudeCredentials.secretName }}
+            optional: true
 ---
 apiVersion: v1
 kind: Service

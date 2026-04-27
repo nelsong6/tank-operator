@@ -204,15 +204,17 @@ spec:
       targetPort: 8443
 ---
 {{- /*
-Credentials Secret: orchestrator-only. Session pods cannot read this — the
-RoleBinding scopes to the orchestrator's SA in the orchestrator namespace.
-ESO seeds it once from KV; thereafter the OAuth gateway is the only writer.
+Credentials Secret: KV is the source of truth, ESO mirrors KV → this
+Secret on a short interval (1m) so rotations performed by the
+credential-refresh CronJob (templates/credential-refresher.yaml) reach
+the orchestrator pod's mounted volume promptly. The orchestrator only
+reads this Secret; the CronJob is the only writer (and it writes to KV,
+not directly to the Secret).
 
-refreshInterval: 0s means ESO does NOT periodically reconcile from KV. To
-force a re-seed (e.g. after manual /login produces a new credentials.json),
-re-run scripts/setup-claude-credentials.ps1, which also pokes the
-ExternalSecret with a force-sync annotation — but you'll need to update the
-script to target the new namespace and refresh interval, see TODO below.
+To re-seed (e.g. after the refresh chain dies and you have to log in
+fresh on another machine), upload the new credentials.json blob to the
+KV secret named by .Values.externalSecret.claudeCredentials.kvKey. ESO
+picks it up on the next refresh.
 */}}
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -220,7 +222,7 @@ metadata:
   name: {{ .Values.externalSecret.claudeCredentials.secretName }}
   namespace: {{ .Values.namespaces.orchestrator }}
 spec:
-  refreshInterval: 0s
+  refreshInterval: 1m
   secretStoreRef:
     name: {{ .Values.externalSecret.storeName }}
     kind: {{ .Values.externalSecret.storeKind }}
@@ -236,28 +238,3 @@ spec:
         decodingStrategy: None
         metadataPolicy: None
         nullBytePolicy: Ignore
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: claude-credentials-rw
-  namespace: {{ .Values.namespaces.orchestrator }}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: [{{ .Values.externalSecret.claudeCredentials.secretName | quote }}]
-    verbs: ["get", "patch", "update"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: claude-credentials-rw
-  namespace: {{ .Values.namespaces.orchestrator }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ .Values.orchestrator.serviceAccount }}
-    namespace: {{ .Values.namespaces.orchestrator }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: claude-credentials-rw
