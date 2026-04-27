@@ -156,7 +156,10 @@ spec:
       restartPolicy: OnFailure
       containers:
         - name: reflect
-          image: bitnami/kubectl:1.31
+          # Bitnami's kubectl image only publishes major.minor.patch tags
+          # (1.31.x), so a `:1.31` short tag 404s. alpine/kubectl is a
+          # community image with stable major.minor tags and small footprint.
+          image: alpine/k8s:1.31.0
           command:
             - /bin/sh
             - -c
