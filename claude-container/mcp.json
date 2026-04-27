@@ -9,7 +9,7 @@
     },
     "github": {
       "type": "http",
-      "url": "http://mcp-github.mcp-github.svc:80/",
+      "url": "http://mcp-github.mcp-github.svc:80/mcp/",
       "headers": {
         "Authorization": "Bearer ${MCP_GITHUB_BEARER}"
       }
