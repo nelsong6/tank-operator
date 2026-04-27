@@ -26,7 +26,7 @@ spec:
       serviceAccountName: mcp-azure
       containers:
         - name: azure-mcp
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Image entrypoint is `./server-binary server start` — args here
           # are flags only.

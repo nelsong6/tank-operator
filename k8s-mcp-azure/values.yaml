@@ -6,9 +6,11 @@
 # infra/mcp-server/ for the upstream definitions.
 
 image:
-  # Pin once initial bring-up is verified — :latest is fine for now.
+  # Microsoft's image — no tag-bump CI on our side. Digest-pinned so :latest
+  # drift is impossible; bump by hand when you want a newer version (find the
+  # current digest with `kubectl -n mcp-azure get pod -o jsonpath=...`).
   repository: mcr.microsoft.com/azure-sdk/azure-mcp
-  tag: latest
+  digest: sha256:ec43a27ccbd6f7333c010bbe0a3ea7afed4ee761c19e080c5090bc3e2fd6f40e
   pullPolicy: IfNotPresent
 
 # Loopback-only port azure-mcp listens on. Sidecar fronts it.

@@ -14,7 +14,7 @@ concurrency:
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Azure login (mcp-github CI SP)
         uses: azure/login@v2
@@ -33,13 +35,34 @@ jobs:
       - name: ACR login
         run: az acr login --name romainecr
 
-      - name: Build + push
+      - name: Compute tag
+        id: tag
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (SHA-pinned, no :latest)
         working-directory: mcp-servers/github
         run: |
-          TAG=$(git rev-parse --short HEAD)
+          TAG="${{ steps.tag.outputs.tag }}"
           docker build \
-            -t romainecr.azurecr.io/mcp-github:$TAG \
-            -t romainecr.azurecr.io/mcp-github:latest .
+            -t romainecr.azurecr.io/mcp-github:$TAG .
           docker push romainecr.azurecr.io/mcp-github:$TAG
-          docker push romainecr.azurecr.io/mcp-github:latest
           echo "### Pushed romainecr.azurecr.io/mcp-github:$TAG" >> $GITHUB_STEP_SUMMARY
+
+      - name: Bump mcp-github chart
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          # Quote the value so all-digit short-SHAs aren't parsed as YAML numbers
+          # and emitted in scientific notation. Same trap as the tank-operator
+          # chart; see reference_yaml_tag_quoting.md.
+          sed -i -E "s|^(  tag: ).*$|\1\"${tag}\"|" k8s-mcp-github/values.yaml
+
+          if git diff --quiet k8s-mcp-github/values.yaml; then
+            echo "no tag change"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s-mcp-github/values.yaml
+          git commit -m "chart: bump mcp-github image to ${tag} [skip ci]"
+          git push
