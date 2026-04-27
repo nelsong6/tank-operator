@@ -183,20 +183,27 @@ async def _pump(browser: WebSocket, k8s_ws: aiohttp.ClientWebSocketResponse) -> 
 
                 text = msg.get("text")
                 if text is not None:
-                    # Resize control frames look like JSON; everything else
-                    # is raw stdin from xterm.js.
+                    # Control frames look like JSON; everything else is raw
+                    # stdin from xterm.js. Recognized: {"resize":[c,r]} for
+                    # PTY size changes, {"ping":...} as a no-op heartbeat the
+                    # browser sends every ~30s so Envoy's idle stream timeout
+                    # (default 5min) doesn't cut a quiet WS — which would also
+                    # let the orchestrator's idle reaper delete the pod.
                     if text and text[0] == "{":
                         try:
                             ctrl = json.loads(text)
                         except ValueError:
                             ctrl = None
-                        if isinstance(ctrl, dict) and "resize" in ctrl:
-                            cols, rows = ctrl["resize"]
-                            await send_channel(
-                                RESIZE_CHANNEL,
-                                json.dumps({"Width": int(cols), "Height": int(rows)}),
-                            )
-                            continue
+                        if isinstance(ctrl, dict):
+                            if "resize" in ctrl:
+                                cols, rows = ctrl["resize"]
+                                await send_channel(
+                                    RESIZE_CHANNEL,
+                                    json.dumps({"Width": int(cols), "Height": int(rows)}),
+                                )
+                                continue
+                            if "ping" in ctrl:
+                                continue
                     await send_channel(STDIN_CHANNEL, text)
                 else:
                     data = msg.get("bytes")

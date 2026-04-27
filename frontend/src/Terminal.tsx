@@ -48,61 +48,102 @@ export function Terminal({ sessionId, status, visible }: Props) {
     }
 
     const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/sessions/${sessionId}/exec`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-    ws.binaryType = "arraybuffer";
 
-    let cleanup: (() => void) | null = null;
+    let cancelled = false;
+    let reconnectTimer: number | null = null;
+    let pingTimer: number | null = null;
+    let backoffMs = 500;
+    let everConnected = false;
+    const maxBackoffMs = 15_000;
 
-    ws.onopen = () => {
-      const sendResize = (cols: number, rows: number) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ resize: [cols, rows] }));
-        }
-      };
-
-      const onWindowResize = () => {
-        fit.fit();
-        sendResize(term.cols, term.rows);
-      };
-
-      sendResize(term.cols, term.rows);
-      window.addEventListener("resize", onWindowResize);
-
-      const onResizeDisp = term.onResize(({ cols, rows }) => sendResize(cols, rows));
-      const onDataDisp = term.onData((data) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(data);
-      });
-
-      cleanup = () => {
-        window.removeEventListener("resize", onWindowResize);
-        onResizeDisp.dispose();
-        onDataDisp.dispose();
-      };
+    const sendIfOpen = (payload: string | Uint8Array) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(payload);
     };
 
-    ws.onmessage = (e) => {
-      if (typeof e.data === "string") {
-        term.write(e.data);
-      } else {
-        term.write(new Uint8Array(e.data as ArrayBuffer));
+    const sendResize = (cols: number, rows: number) => {
+      sendIfOpen(JSON.stringify({ resize: [cols, rows] }));
+    };
+
+    const onWindowResize = () => {
+      fit.fit();
+      sendResize(term.cols, term.rows);
+    };
+    window.addEventListener("resize", onWindowResize);
+    const onResizeDisp = term.onResize(({ cols, rows }) => sendResize(cols, rows));
+    const onDataDisp = term.onData((data) => sendIfOpen(data));
+
+    const stopPing = () => {
+      if (pingTimer != null) {
+        window.clearInterval(pingTimer);
+        pingTimer = null;
       }
     };
 
-    ws.onclose = (e) => {
-      // code 1006 = abnormal closure with no close frame; for those the
-      // browser drops `reason`. Show the code so failures are diagnosable.
-      const detail = e.reason || `code ${e.code}`;
-      term.write(`\r\n\x1b[33m[disconnected: ${detail}]\x1b[0m\r\n`);
+    const connect = () => {
+      if (cancelled) return;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        if (everConnected) {
+          term.write("\r\n\x1b[32m[reconnected]\x1b[0m\r\n");
+        }
+        everConnected = true;
+        backoffMs = 500;
+        sendResize(term.cols, term.rows);
+        // Heartbeat keeps Envoy's idle stream timeout (~5min default) from
+        // cutting a quiet WS. Without it, the orchestrator's idle reaper
+        // then deletes the pod 5min later — the session is gone for good.
+        stopPing();
+        pingTimer = window.setInterval(() => {
+          sendIfOpen(JSON.stringify({ ping: 1 }));
+        }, 30_000);
+      };
+
+      ws.onmessage = (e) => {
+        if (typeof e.data === "string") {
+          term.write(e.data);
+        } else {
+          term.write(new Uint8Array(e.data as ArrayBuffer));
+        }
+      };
+
+      ws.onclose = (e) => {
+        stopPing();
+        // code 1006 = abnormal closure with no close frame; for those the
+        // browser drops `reason`. Show the code so failures are diagnosable.
+        const detail = e.reason || `code ${e.code}`;
+        // 1008 = policy violation (auth / not the session owner) — retrying
+        // won't fix it. Everything else gets exponential backoff.
+        if (cancelled || e.code === 1008) {
+          term.write(`\r\n\x1b[33m[disconnected: ${detail}]\x1b[0m\r\n`);
+          return;
+        }
+        const delay = backoffMs;
+        term.write(
+          `\r\n\x1b[33m[disconnected: ${detail}; reconnecting in ${Math.round(delay / 1000)}s…]\x1b[0m\r\n`,
+        );
+        backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+
+      ws.onerror = () => {
+        // onclose fires next and drives the reconnect; nothing to do here.
+      };
     };
 
-    ws.onerror = () => {
-      term.write("\r\n\x1b[31m[connection error]\x1b[0m\r\n");
-    };
+    connect();
 
     return () => {
-      cleanup?.();
-      ws.close();
+      cancelled = true;
+      stopPing();
+      if (reconnectTimer != null) window.clearTimeout(reconnectTimer);
+      window.removeEventListener("resize", onWindowResize);
+      onResizeDisp.dispose();
+      onDataDisp.dispose();
+      wsRef.current?.close();
       term.dispose();
       fitRef.current = null;
       termRef.current = null;
