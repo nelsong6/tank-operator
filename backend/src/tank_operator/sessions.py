@@ -143,6 +143,16 @@ class SessionManager:
         )
         pod_spec: dict[str, Any] = {
             "serviceAccountName": SESSION_SERVICE_ACCOUNT,
+            # The image's USER is claude (uid 1000). Reasserting it here
+            # forces the kubelet to reject the pod if the image ever ships
+            # back to root, and claude's safety check requires non-root for
+            # bypassPermissions mode to take effect.
+            "securityContext": {
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "fsGroup": 1000,
+            },
             "containers": [
                 {
                     "name": "claude",

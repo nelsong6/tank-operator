@@ -49,7 +49,15 @@ RUN mkdir -p /workspace && cp /opt/claude-container/mcp.json /workspace/.mcp.jso
 COPY claude-container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Run the agent as a non-root user so claude's safety check accepts
+# bypassPermissions mode (it refuses to enable bypass when uid 0). Also
+# defense-in-depth: a tool-use exploit can't escape to a privileged shell.
+RUN addgroup -g 1000 claude \
+    && adduser -u 1000 -G claude -s /bin/bash -D claude \
+    && chown -R claude:claude /workspace /home/claude
+
 WORKDIR /workspace
+USER claude
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]

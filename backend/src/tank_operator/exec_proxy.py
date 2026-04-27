@@ -75,8 +75,8 @@ if [ -r "$TOKEN_PATH" ]; then
   export MCP_AZURE_BEARER="$TOKEN"
   export MCP_GITHUB_BEARER="$TOKEN"
 fi
-mkdir -p /root/.claude
-cat > /root/.claude/settings.json <<'EOF'
+mkdir -p $HOME/.claude
+cat > $HOME/.claude/settings.json <<'EOF'
 {"theme":"dark","permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true}
 EOF
 mcp_enabled='[]'
@@ -92,7 +92,7 @@ case "${TANK_SESSION_MODE:-api_key}" in
     # routes platform.claude.com to the gateway Service; NODE_EXTRA_CA_CERTS
     # makes the cluster's self-signed CA trusted so curl + claude both
     # accept the gateway's cert.
-    creds_path=/root/.claude/.credentials.json
+    creds_path=$HOME/.claude/.credentials.json
     if curl -sS --fail --max-time 15 \
          --cacert /etc/oauth-gateway-ca/ca.crt \
          "https://platform.claude.com/internal/credentials-bootstrap" \
@@ -113,7 +113,7 @@ case "${TANK_SESSION_MODE:-api_key}" in
     api_key_block="\"customApiKeyResponses\": {\"approved\": [\"${last20}\", \"${last22}\"], \"rejected\": []},"
     ;;
 esac
-cat > /root/.claude.json <<EOF
+cat > $HOME/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
   ${api_key_block}
