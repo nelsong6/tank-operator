@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 
 interface Props {
@@ -38,6 +39,14 @@ export function Terminal({ sessionId, status, visible }: Props) {
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
+    // URLs in claude's output become click-to-open. Defaults underline-on-hover
+    // and matches plain http(s) links + OSC 8 hyperlinks. Open in a new tab so
+    // the workspace session isn't navigated away from.
+    term.loadAddon(
+      new WebLinksAddon((event, uri) => {
+        window.open(uri, "_blank", "noopener,noreferrer");
+      }),
+    );
     term.open(containerRef.current);
     termRef.current = term;
     if (visible) {
