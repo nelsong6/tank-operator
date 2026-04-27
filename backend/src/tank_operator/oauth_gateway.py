@@ -43,10 +43,12 @@ from kubernetes_asyncio import client
 
 log = logging.getLogger(__name__)
 
-# Hardcoded into Claude Code's bundled JS; if Anthropic rotates the public
-# client_id we'll need to bump this. Discovered by grepping the installed
-# @anthropic-ai/claude-code package for `client_id`.
-ANTHROPIC_CLIENT_ID = "22422756-60c9-4084-8eb7-27705fd5cf9a"
+# Hardcoded into Claude Code's bundled JS. Two distinct client_ids ship in
+# the bundle: 22422756-... is paired with the legacy console.anthropic.com
+# endpoint, 9d1c250a-... with platform.claude.com (our token URL). Easy to
+# get wrong — both look plausible by grep alone. Tied here by the
+# MANUAL_REDIRECT_URL/TOKEN_URL pairing in cli.js.
+ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 ANTHROPIC_TOKEN_HOST = "platform.claude.com"
 
