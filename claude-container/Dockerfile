@@ -52,12 +52,12 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # Run the agent as a non-root user so claude's safety check accepts
 # bypassPermissions mode (it refuses to enable bypass when uid 0). Also
 # defense-in-depth: a tool-use exploit can't escape to a privileged shell.
-RUN addgroup -g 1000 claude \
-    && adduser -u 1000 -G claude -s /bin/bash -D claude \
-    && chown -R claude:claude /workspace /home/claude
+# node:20-alpine already ships a `node` user at uid/gid 1000 with
+# /home/node, so reuse it (creating another user with gid 1000 collides).
+RUN chown -R node:node /workspace
 
 WORKDIR /workspace
-USER claude
+USER node
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]
