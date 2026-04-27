@@ -52,6 +52,17 @@ log = logging.getLogger(__name__)
 # Unsetting ANTHROPIC_API_KEY in subscription mode is important — if both are
 # present, claude prefers the API key and bills against it.
 _BOOTSTRAP_SH = r"""
+# Read the projected SA token and export it as the Authorization bearer
+# for both HTTP MCP servers. claude-container's image-level entrypoint.sh
+# does this too, but kubectl exec starts a fresh shell that doesn't
+# inherit env from PID 1 — so we have to redo it here for the in-pod
+# claude process to pick it up.
+TOKEN_PATH=/var/run/secrets/kubernetes.io/serviceaccount/token
+if [ -r "$TOKEN_PATH" ]; then
+  TOKEN="$(cat $TOKEN_PATH)"
+  export MCP_AZURE_BEARER="$TOKEN"
+  export MCP_GITHUB_BEARER="$TOKEN"
+fi
 mkdir -p /root/.claude
 cat > /root/.claude/settings.json <<'EOF'
 {"theme":"dark"}
