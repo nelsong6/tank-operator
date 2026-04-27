@@ -40,11 +40,17 @@ log = logging.getLogger(__name__)
 #                                   from claude-container/mcp.json in this
 #                                   repo, along with the env-var contract its
 #                                   servers expect)
-#   ~/.claude/.credentials.json   — only in subscription mode: the OAuth tokens
-#                                   captured from a logged-in machine, written
-#                                   here so the TUI launches as a logged-in
-#                                   subscriber instead of demanding `claude
-#                                   /login` against a non-existent browser.
+#   ~/.claude/.credentials.json   — only in subscription mode: a credentials
+#                                   blob fetched at boot from the orchestrator's
+#                                   in-cluster OAuth gateway (which impersonates
+#                                   platform.claude.com via /etc/hosts +
+#                                   NODE_EXTRA_CA_CERTS). The blob has a fresh
+#                                   access token + a placeholder refresh token —
+#                                   the real refresh token never enters the
+#                                   pod. When claude later refreshes, it hits
+#                                   the same gateway and gets a new access
+#                                   token; the gateway is the only thing that
+#                                   ever touches Anthropic's OAuth endpoint.
 # Then exec claude. If claude exits we drop into bash so the WS stays useful.
 #
 # `customApiKeyResponses` only matters in api_key mode; in subscription mode
@@ -73,12 +79,24 @@ if [ -f /workspace/.mcp.json ]; then
 fi
 case "${TANK_SESSION_MODE:-api_key}" in
   subscription)
-    if [ -z "${CLAUDE_CODE_CREDENTIALS_JSON:-}" ]; then
-      echo "tank-operator: subscription mode but CLAUDE_CODE_CREDENTIALS_JSON is empty." >&2
-      echo "Run scripts/setup-claude-credentials.{sh,ps1} to populate Key Vault." >&2
+    # Fetch a fresh credentials.json from the in-cluster OAuth gateway. The
+    # gateway returns the original blob shape (preserved from KV) but with a
+    # fresh access token from its single-flight cache and a placeholder
+    # refresh token, so the pod never gets the real refresh token. /etc/hosts
+    # routes platform.claude.com to the gateway Service; NODE_EXTRA_CA_CERTS
+    # makes the cluster's self-signed CA trusted so curl + claude both
+    # accept the gateway's cert.
+    creds_path=/root/.claude/.credentials.json
+    if curl -sS --fail --max-time 15 \
+         --cacert /etc/oauth-gateway-ca/ca.crt \
+         "https://platform.claude.com/internal/credentials-bootstrap" \
+         -o "$creds_path"; then
+      chmod 600 "$creds_path"
     else
-      printf '%s' "${CLAUDE_CODE_CREDENTIALS_JSON}" > /root/.claude/.credentials.json
-      chmod 600 /root/.claude/.credentials.json
+      echo "tank-operator: failed to fetch credentials from OAuth gateway." >&2
+      echo "Check that claude-oauth-gateway service is healthy and the CA" >&2
+      echo "ConfigMap is reflected into this namespace; the session will" >&2
+      echo "fall through to claude /login, which won't work without a browser." >&2
     fi
     unset ANTHROPIC_API_KEY
     api_key_block=''

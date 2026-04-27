@@ -24,6 +24,8 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+            - name: oauth-tls
+              containerPort: 8443
           env:
             - name: SESSIONS_NAMESPACE
               value: {{ .Values.namespaces.sessions | quote }}
@@ -39,9 +41,21 @@ spec:
               value: {{ .Values.session.reaperIntervalSeconds | quote }}
             - name: TANK_OPERATOR_STATIC_DIR
               value: /app/static
+            - name: CLAUDE_CREDENTIALS_NAMESPACE
+              value: {{ .Values.namespaces.orchestrator | quote }}
+            - name: CLAUDE_CREDENTIALS_SECRET
+              value: {{ .Values.externalSecret.claudeCredentials.secretName | quote }}
+            - name: CLAUDE_CREDENTIALS_KEY
+              value: {{ .Values.externalSecret.claudeCredentials.secretKey | quote }}
+            - name: CLAUDE_OAUTH_GATEWAY_HOST
+              value: {{ .Values.oauthGateway.serviceHost | quote }}
           envFrom:
             - secretRef:
                 name: {{ .Values.externalSecret.auth.secretName }}
+          volumeMounts:
+            - name: oauth-gateway-tls
+              mountPath: /etc/oauth-gateway-tls
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /healthz
@@ -54,6 +68,11 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 30
+      volumes:
+        - name: oauth-gateway-tls
+          secret:
+            secretName: claude-oauth-leaf
+            optional: true  # cert-manager hasn't issued yet on first install
 ---
 apiVersion: v1
 kind: Service

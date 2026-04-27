@@ -36,6 +36,13 @@ ingress:
   certIssuer: letsencrypt-prod
   tlsSecret: tank-operator-tls
 
+# OAuth gateway: the orchestrator pod also serves an HTTPS listener
+# impersonating platform.claude.com (self-signed CA, trusted only by session
+# pods that mount our ca.crt). Session pods get a hostAlias mapping that
+# hostname to the gateway service's ClusterIP.
+oauthGateway:
+  serviceHost: claude-oauth-gateway.tank-operator.svc.cluster.local
+
 externalSecret:
   storeName: romaine-kv
   storeKind: ClusterSecretStore
@@ -68,8 +75,17 @@ externalSecret:
         kvKey: github-app-private-key
       - envVar: ANTHROPIC_API_KEY
         kvKey: anthropic-api-key
-      - envVar: CLAUDE_CODE_CREDENTIALS_JSON
-        kvKey: claude-code-credentials
+  # Claude Code subscription credentials. Lives ONLY in the orchestrator
+  # namespace; session pods cannot read this Secret. The OAuth gateway
+  # endpoint inside the orchestrator (POST /v1/oauth/token) is the only thing
+  # that uses the refresh token. ESO seeds from KV once (refreshInterval: 0)
+  # and the gateway is the steady-state writer thereafter. Re-seed by
+  # re-running scripts/setup-claude-credentials.ps1 — that script writes KV
+  # and force-syncs the ExternalSecret.
+  claudeCredentials:
+    secretName: claude-code-credentials
+    secretKey: claude-code-credentials
+    kvKey: claude-code-credentials
   # Auth secrets for the orchestrator's MSAL → backend JWT flow. ENTRA_CLIENT_ID
   # is the audience for verifying Entra ID tokens; JWT_SECRET signs the backend's
   # own session tokens; ALLOWED_EMAILS (comma-separated) gates which signed-in

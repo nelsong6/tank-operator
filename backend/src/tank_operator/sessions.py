@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import socket
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -16,6 +17,15 @@ SESSIONS_NAMESPACE = os.environ.get("SESSIONS_NAMESPACE", "tank-operator-session
 SESSION_IMAGE = os.environ.get("SESSION_IMAGE", "romainecr.azurecr.io/claude-container:latest")
 SESSION_SERVICE_ACCOUNT = os.environ.get("SESSION_SERVICE_ACCOUNT", "claude-session")
 GITHUB_APP_SECRET = os.environ.get("GITHUB_APP_SECRET", "github-app-creds")
+# OAuth gateway: in-cluster service that impersonates platform.claude.com.
+# Session pods reach it via a hostAlias mapping platform.claude.com to this
+# Service's ClusterIP — hostAliases requires an IP, not a DNS name, so we
+# resolve once at startup and stamp the IP onto every Deployment manifest.
+OAUTH_GATEWAY_HOST = os.environ.get(
+    "CLAUDE_OAUTH_GATEWAY_HOST",
+    "claude-oauth-gateway.tank-operator.svc.cluster.local",
+)
+OAUTH_GATEWAY_CA_CONFIGMAP = os.environ.get("CLAUDE_OAUTH_GATEWAY_CA_CONFIGMAP", "claude-oauth-ca")
 # Stamping these on each session Deployment makes ArgoCD claim it into the
 # tank-operator-sessions Application's resource tree (visible alongside the
 # orchestrator's chart-managed resources). That app has no auto-sync, so
@@ -84,6 +94,10 @@ class SessionManager:
         self._ws_count: dict[str, int] = {}
         self._activity: dict[str, float] = {}
         self._reaper_task: asyncio.Task[None] | None = None
+        # ClusterIP of the OAuth gateway Service — resolved once at startup
+        # and stamped onto each Deployment as a hostAlias, since K8s
+        # hostAliases require an IP literal, not a DNS name.
+        self._oauth_gateway_ip: str | None = None
 
     async def startup(self) -> None:
         try:
@@ -93,7 +107,24 @@ class SessionManager:
         self._api = client.ApiClient()
         self._apps = client.AppsV1Api(self._api)
         self._core = client.CoreV1Api(self._api)
+        self._oauth_gateway_ip = await self._resolve_oauth_gateway_ip()
         self._reaper_task = asyncio.create_task(self._reaper_loop())
+
+    async def _resolve_oauth_gateway_ip(self) -> str | None:
+        """Resolve the OAuth gateway Service's ClusterIP via cluster DNS.
+
+        Returns None if resolution fails — callers should treat this as
+        "OAuth gateway not deployed yet" and skip stamping the hostAlias
+        rather than failing session creation. (Useful for first-install or
+        local dev where the chart isn't fully reconciled.)
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            infos = await loop.getaddrinfo(OAUTH_GATEWAY_HOST, None, type=socket.SOCK_STREAM)
+            return infos[0][4][0]
+        except Exception:
+            log.warning("could not resolve OAuth gateway %s; sessions will boot without it", OAUTH_GATEWAY_HOST)
+            return None
 
     async def shutdown(self) -> None:
         if self._reaper_task is not None:
@@ -110,6 +141,58 @@ class SessionManager:
         argocd_tracking_id = (
             f"{ARGOCD_TRACKING_APP}:apps/Deployment:{SESSIONS_NAMESPACE}/{deployment_name}"
         )
+        pod_spec: dict[str, Any] = {
+            "serviceAccountName": SESSION_SERVICE_ACCOUNT,
+            "containers": [
+                {
+                    "name": "claude",
+                    "image": SESSION_IMAGE,
+                    "imagePullPolicy": "Always",
+                    "command": ["sleep", "infinity"],
+                    "env": [
+                        # Read by exec_proxy's bootstrap to pick the
+                        # auth path. Sourced at the env level (not
+                        # via secret) because the value is per-pod,
+                        # not a shared secret.
+                        {"name": "TANK_SESSION_MODE", "value": mode},
+                    ],
+                    "envFrom": [
+                        {"secretRef": {"name": GITHUB_APP_SECRET}},
+                    ],
+                    "stdin": True,
+                    "tty": True,
+                }
+            ],
+        }
+        # OAuth gateway plumbing: add a hostAlias so platform.claude.com
+        # resolves to the in-cluster gateway Service, mount the gateway's
+        # CA cert (NOT the private key — that stays in the orchestrator
+        # namespace), and set NODE_EXTRA_CA_CERTS so claude's Node runtime
+        # trusts it. If the gateway IP couldn't be resolved at startup we
+        # skip this whole stanza; the pod will boot but won't be able to
+        # refresh — surfaces as a 401 the user can recover from by
+        # recreating the session once the gateway is healthy.
+        if self._oauth_gateway_ip:
+            pod_spec["hostAliases"] = [
+                {"ip": self._oauth_gateway_ip, "hostnames": ["platform.claude.com"]}
+            ]
+            container = pod_spec["containers"][0]
+            container["env"].append(
+                {"name": "NODE_EXTRA_CA_CERTS", "value": "/etc/oauth-gateway-ca/ca.crt"}
+            )
+            container["volumeMounts"] = [
+                {
+                    "name": "oauth-gateway-ca",
+                    "mountPath": "/etc/oauth-gateway-ca",
+                    "readOnly": True,
+                }
+            ]
+            pod_spec["volumes"] = [
+                {
+                    "name": "oauth-gateway-ca",
+                    "configMap": {"name": OAUTH_GATEWAY_CA_CONFIGMAP},
+                }
+            ]
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
@@ -144,29 +227,7 @@ class SessionManager:
                             "azure.workload.identity/use": "true",
                         },
                     },
-                    "spec": {
-                        "serviceAccountName": SESSION_SERVICE_ACCOUNT,
-                        "containers": [
-                            {
-                                "name": "claude",
-                                "image": SESSION_IMAGE,
-                                "imagePullPolicy": "Always",
-                                "command": ["sleep", "infinity"],
-                                "env": [
-                                    # Read by exec_proxy's bootstrap to pick the
-                                    # auth path. Sourced at the env level (not
-                                    # via secret) because the value is per-pod,
-                                    # not a shared secret.
-                                    {"name": "TANK_SESSION_MODE", "value": mode},
-                                ],
-                                "envFrom": [
-                                    {"secretRef": {"name": GITHUB_APP_SECRET}},
-                                ],
-                                "stdin": True,
-                                "tty": True,
-                            }
-                        ],
-                    },
+                    "spec": pod_spec,
                 },
             },
         }
@@ -175,6 +236,12 @@ class SessionManager:
         assert self._apps is not None
         if mode not in SESSION_MODES:
             raise ValueError(f"unknown session mode: {mode!r}")
+        # Lazy retry of OAuth gateway resolution — handles the chart-install
+        # race where the orchestrator pod starts before its sibling Service
+        # exists. After first successful resolution the IP is cached; if the
+        # Service is ever recreated (rare), restart the orchestrator.
+        if self._oauth_gateway_ip is None:
+            self._oauth_gateway_ip = await self._resolve_oauth_gateway_ip()
         session_id = uuid.uuid4().hex[:10]
         await self._apps.create_namespaced_deployment(
             namespace=SESSIONS_NAMESPACE,

@@ -1,17 +1,19 @@
-# Stash a Claude Code subscription credentials JSON in Azure Key Vault so
-# session pods can launch claude as a logged-in subscriber instead of paying
-# per-token via an API key.
+# Seed the Claude Code subscription credentials in Azure Key Vault. From there
+# ExternalSecret pulls them once into a K8s Secret in the orchestrator
+# namespace; the in-cluster OAuth gateway (POST /v1/oauth/token in
+# tank-operator's FastAPI app) is the only thing that reads or writes that
+# Secret going forward. Session pods never see the refresh token.
 #
 # How to produce the JSON:
 #   1. In WSL (or any Linux env), `npm i -g @anthropic-ai/claude-code`.
 #   2. Run `claude` and complete `/login` in a browser.
 #   3. `cat ~/.claude/.credentials.json` — that's the blob this script wants.
 #
-# The pod's bootstrap writes the same JSON to /root/.claude/.credentials.json
-# before launching claude, so the TUI treats the container as a logged-in
-# subscriber. The CLI auto-refreshes inside the pod, but those refreshes
-# don't get back to KV — every fresh pod starts from the snapshot here.
-# Re-run when sessions stop authenticating.
+# When to re-run: only when the refresh chain dies entirely (e.g. you revoked
+# access manually, or the gateway has been off long enough that the refresh
+# token expired). In normal operation the gateway rotates the refresh token
+# in the K8s Secret on every refresh, so KV drifts intentionally — KV is the
+# disaster-recovery seed, not the live source of truth.
 #
 # Usage:  Get-Content path\to\credentials.json | .\scripts\setup-claude-credentials.ps1
 #    or:  .\scripts\setup-claude-credentials.ps1   (then paste + Ctrl-Z + Enter)
@@ -20,8 +22,11 @@ $ErrorActionPreference = 'Stop'
 
 $Vault         = if ($env:VAULT)         { $env:VAULT }         else { 'romaine-kv' }
 $KvSecretName  = 'claude-code-credentials'
-$EsoNamespace  = if ($env:ESO_NAMESPACE) { $env:ESO_NAMESPACE } else { 'tank-operator-sessions' }
-$EsoName       = if ($env:ESO_NAME)      { $env:ESO_NAME }      else { 'github-app-creds' }
+# After re-seeding KV we force-sync the ExternalSecret that lives in the
+# orchestrator namespace (refreshInterval: 0s, so without an explicit poke
+# ESO never re-reads from KV).
+$EsoNamespace  = if ($env:ESO_NAMESPACE) { $env:ESO_NAMESPACE } else { 'tank-operator' }
+$EsoName       = if ($env:ESO_NAME)      { $env:ESO_NAME }      else { 'claude-code-credentials' }
 
 function Require-Cmd($name) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -80,7 +85,11 @@ if ($LASTEXITCODE -ne 0) { Write-Error "kubectl annotate failed" }
 
 Write-Host @'
 
-Credentials stored. New "subscription" sessions will boot logged-in.
+Credentials seeded. The OAuth gateway will pick up the new refresh token
+on its next call to platform.claude.com.
 
-Note: pods already running will NOT see the new value. Kill + recreate.
+Note: the orchestrator pod caches the refresh token in memory after first
+read; restart it (kubectl -n tank-operator rollout restart deploy/tank-operator)
+to force an immediate re-read. Existing session pods are unaffected — they
+talk to the gateway, not to KV.
 '@

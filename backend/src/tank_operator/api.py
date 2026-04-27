@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
 from .exec_proxy import bridge
+from .oauth_gateway import OAuthGateway, handle_bootstrap_blob, handle_oauth_token
 from .sessions import (
     DEFAULT_SESSION_MODE,
     SESSION_MODES,
@@ -25,8 +26,11 @@ sessions = SessionManager()
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await sessions.startup()
+    # SessionManager owns the K8s ApiClient, so reuse it for the OAuth gateway
+    # rather than opening a second one.
+    app.state.oauth_gateway = OAuthGateway(sessions._api)  # type: ignore[arg-type]
     try:
         yield
     finally:
@@ -48,6 +52,36 @@ class LoginResponse(BaseModel):
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/v1/oauth/token")
+async def oauth_token(request: Request) -> dict[str, object]:
+    """OAuth gateway: impersonates platform.claude.com's token endpoint.
+
+    Reachable two ways:
+      - On the public listener: returns 404 because the host check fails
+        (Envoy rewrites Host to tank.romaine.life). Inert.
+      - On the in-cluster TLS listener: session pods reach this via a
+        /etc/hosts override mapping platform.claude.com to the orchestrator
+        service IP, so the Host header arrives as platform.claude.com and
+        the gateway answers.
+    See oauth_gateway.py for the rationale and single-flight caching design.
+    """
+    return await handle_oauth_token(request)
+
+
+@app.get("/internal/credentials-bootstrap")
+async def credentials_bootstrap(request: Request) -> dict[str, object]:
+    """Returns a complete credentials.json for a session pod to write to disk.
+
+    Called once by the session container's bootstrap script. Same hostname
+    gate as /v1/oauth/token — only reachable via the in-cluster TLS
+    listener. The blob has the full original credentials.json shape (so we
+    don't have to hardcode the schema) but with a fresh access token and a
+    placeholder refresh token, so the pod never touches the real refresh
+    token.
+    """
+    return await handle_bootstrap_blob(request)
 
 
 @app.get("/api/config")

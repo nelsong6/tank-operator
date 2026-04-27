@@ -1,0 +1,260 @@
+{{- /*
+OAuth gateway plumbing: lets the orchestrator pod impersonate
+platform.claude.com's OAuth token endpoint for in-cluster session pods.
+Read backend/src/tank_operator/oauth_gateway.py for the design rationale.
+
+Pieces:
+  - cert-manager Issuer + CA Certificate + CA Issuer + leaf Certificate
+    (self-signed CA, then a leaf signed by it for platform.claude.com)
+  - ExternalSecret seeding the credentials JSON from KV (refreshInterval: 0
+    so ESO doesn't fight the gateway's writes — gateway is the steady-state
+    writer; KV is cold-storage seed; force-sync by annotation when the
+    refresh chain dies and you re-run setup-claude-credentials.ps1)
+  - RBAC: orchestrator SA gets get/patch on the credentials Secret
+  - ConfigMap reflecting just ca.crt into the sessions namespace so session
+    pods can mount it as their NODE_EXTRA_CA_CERTS bundle (the CA private
+    key stays in tank-operator)
+  - ClusterIP Service exposing the orchestrator's HTTPS gateway port
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: claude-oauth-bootstrap
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: claude-oauth-ca
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  isCA: true
+  commonName: tank-operator-claude-oauth-ca
+  secretName: claude-oauth-ca
+  duration: 87600h  # 10 years; this CA is internal-only
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: claude-oauth-bootstrap
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: claude-oauth-ca-issuer
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  ca:
+    secretName: claude-oauth-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: claude-oauth-leaf
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  secretName: claude-oauth-leaf
+  duration: 2160h  # 90 days
+  renewBefore: 360h
+  dnsNames:
+    - platform.claude.com
+  issuerRef:
+    name: claude-oauth-ca-issuer
+    kind: Issuer
+---
+{{- /*
+Reflect ca.crt into the sessions namespace as a ConfigMap so session pods can
+mount it without ever seeing the CA private key. The private key stays in the
+`claude-oauth-ca` Secret in this namespace, which only cert-manager reads.
+
+We do this with a tiny one-off Job because cert-manager doesn't natively
+support cross-namespace cert distribution — the alternatives (reflector
+operator, kyverno, manual Secret copy) all add a controller. The Job runs
+once at chart install and on each upgrade; it reads ca.crt out of the live
+Secret and ensures the ConfigMap matches. Idempotent. Tolerates re-runs.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-oauth-ca-reflector
+  namespace: {{ .Values.namespaces.orchestrator }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claude-oauth-ca-reflector
+  namespace: {{ .Values.namespaces.orchestrator }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["claude-oauth-ca"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claude-oauth-ca-reflector
+  namespace: {{ .Values.namespaces.orchestrator }}
+subjects:
+  - kind: ServiceAccount
+    name: claude-oauth-ca-reflector
+    namespace: {{ .Values.namespaces.orchestrator }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claude-oauth-ca-reflector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claude-oauth-ca-reflector-write
+  namespace: {{ .Values.namespaces.sessions }}
+rules:
+  # `kubectl apply` does a get-then-patch under the hood, so we need both
+  # read and write verbs on the target ConfigMap.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claude-oauth-ca-reflector-write
+  namespace: {{ .Values.namespaces.sessions }}
+subjects:
+  - kind: ServiceAccount
+    name: claude-oauth-ca-reflector
+    namespace: {{ .Values.namespaces.orchestrator }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claude-oauth-ca-reflector-write
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: claude-oauth-ca-reflect
+  namespace: {{ .Values.namespaces.orchestrator }}
+  annotations:
+    # Re-run on every helm upgrade to pick up CA rotations.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    # ArgoCD equivalent: re-run when the Application syncs.
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      serviceAccountName: claude-oauth-ca-reflector
+      restartPolicy: OnFailure
+      containers:
+        - name: reflect
+          image: bitnami/kubectl:1.31
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # Wait for cert-manager to issue the CA — on first install the
+              # Secret doesn't exist yet when this Job fires.
+              for i in $(seq 1 60); do
+                if kubectl -n {{ .Values.namespaces.orchestrator }} get secret claude-oauth-ca -o jsonpath='{.data.ca\.crt}' >/dev/null 2>&1; then
+                  break
+                fi
+                echo "waiting for cert-manager to issue claude-oauth-ca... ($i/60)" >&2
+                sleep 5
+              done
+              CA=$(kubectl -n {{ .Values.namespaces.orchestrator }} get secret claude-oauth-ca -o jsonpath='{.data.ca\.crt}' | base64 -d)
+              if [ -z "$CA" ]; then
+                echo "claude-oauth-ca secret never appeared — failing." >&2
+                exit 1
+              fi
+              cat <<EOF | kubectl apply -f -
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: claude-oauth-ca
+                namespace: {{ .Values.namespaces.sessions }}
+              data:
+                ca.crt: |
+              $(printf '%s\n' "$CA" | sed 's/^/    /')
+              EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-oauth-gateway
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  selector:
+    app.kubernetes.io/name: tank-operator
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+---
+{{- /*
+Credentials Secret: orchestrator-only. Session pods cannot read this — the
+RoleBinding scopes to the orchestrator's SA in the orchestrator namespace.
+ESO seeds it once from KV; thereafter the OAuth gateway is the only writer.
+
+refreshInterval: 0s means ESO does NOT periodically reconcile from KV. To
+force a re-seed (e.g. after manual /login produces a new credentials.json),
+re-run scripts/setup-claude-credentials.ps1, which also pokes the
+ExternalSecret with a force-sync annotation — but you'll need to update the
+script to target the new namespace and refresh interval, see TODO below.
+*/}}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ .Values.externalSecret.claudeCredentials.secretName }}
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  refreshInterval: 0s
+  secretStoreRef:
+    name: {{ .Values.externalSecret.storeName }}
+    kind: {{ .Values.externalSecret.storeKind }}
+  target:
+    name: {{ .Values.externalSecret.claudeCredentials.secretName }}
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: {{ .Values.externalSecret.claudeCredentials.secretKey }}
+      remoteRef:
+        key: {{ .Values.externalSecret.claudeCredentials.kvKey }}
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: claude-credentials-rw
+  namespace: {{ .Values.namespaces.orchestrator }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ .Values.externalSecret.claudeCredentials.secretName | quote }}]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: claude-credentials-rw
+  namespace: {{ .Values.namespaces.orchestrator }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.orchestrator.serviceAccount }}
+    namespace: {{ .Values.namespaces.orchestrator }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: claude-credentials-rw
