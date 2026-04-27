@@ -26,8 +26,14 @@ log = logging.getLogger(__name__)
 
 # Pre-seed claude's first-run state so a fresh pod boots straight to the chat
 # prompt — no theme picker, no "trust this folder?", no "approve this API key?",
-# no MCP marketplace prompt, no "approve project MCP servers?". State lives in:
-#   ~/.claude/settings.json       — theme
+# no MCP marketplace prompt, no "approve project MCP servers?", and no
+# per-tool prompts (Bash, MCP, Edit, ...). The session pod is a sandboxed,
+# ephemeral, single-tenant execution environment — there's nothing the user
+# would gain from approving each call individually, so we run claude in
+# bypassPermissions mode and pre-accept the bypass-acknowledgement dialog.
+# State lives in:
+#   ~/.claude/settings.json       — theme + bypassPermissions defaultMode +
+#                                   skipDangerousModePermissionPrompt
 #   ~/.claude.json                — onboarding flag + API-key trust list
 #                                   (claude keys off the last 20 chars; we
 #                                   include 22 too in case that flips back) +
@@ -71,7 +77,7 @@ if [ -r "$TOKEN_PATH" ]; then
 fi
 mkdir -p /root/.claude
 cat > /root/.claude/settings.json <<'EOF'
-{"theme":"dark"}
+{"theme":"dark","permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true}
 EOF
 mcp_enabled='[]'
 if [ -f /workspace/.mcp.json ]; then
