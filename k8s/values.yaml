@@ -97,12 +97,11 @@ externalSecret:
       - envVar: ANTHROPIC_API_KEY
         kvKey: anthropic-api-key
   # Claude Code subscription credentials. Lives ONLY in the orchestrator
-  # namespace; session pods cannot read this Secret. The OAuth gateway
-  # endpoint inside the orchestrator (POST /v1/oauth/token) is the only thing
-  # that uses the refresh token. ESO seeds from KV once (refreshInterval: 0)
-  # and the gateway is the steady-state writer thereafter. Re-seed by
-  # re-running scripts/setup-claude-credentials.ps1 — that script writes KV
-  # and force-syncs the ExternalSecret.
+  # namespace; session pods cannot read this Secret. KV is the source of
+  # truth: the credential-refresh CronJob writes rotations to KV, ESO
+  # mirrors KV → this Secret on a 1m interval, and the orchestrator pod
+  # mounts the Secret as a file. Re-seed (after refresh chain dies) by
+  # uploading a fresh credentials.json to the KV secret named below.
   claudeCredentials:
     secretName: claude-code-credentials
     secretKey: claude-code-credentials
