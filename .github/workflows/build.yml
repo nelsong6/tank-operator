@@ -62,8 +62,10 @@ jobs:
         run: |
           tag="${{ steps.tag.outputs.tag }}"
           # Targeted sed: only the line beginning with two spaces + `tag:` under image.
-          # Sufficient for our single-image values.yaml — revisit if the chart grows.
-          sed -i -E "s|^(  tag: ).*$|\1${tag}|" k8s/values.yaml
+          # Quote the value so all-digit short-SHAs (e.g. 6432731) aren't parsed as
+          # numbers by YAML and emitted as scientific notation. Sufficient for our
+          # single-image values.yaml — revisit if the chart grows.
+          sed -i -E "s|^(  tag: ).*$|\1\"${tag}\"|" k8s/values.yaml
 
           if git diff --quiet k8s/values.yaml; then
             echo "no tag change"
