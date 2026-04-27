@@ -17,6 +17,7 @@ interface Props {
 export function Terminal({ sessionId, status, visible }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const termRef = useRef<XTerm | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const [everActive, setEverActive] = useState(false);
 
@@ -38,7 +39,13 @@ export function Terminal({ sessionId, status, visible }: Props) {
     fitRef.current = fit;
     term.loadAddon(fit);
     term.open(containerRef.current);
-    if (visible) fit.fit();
+    termRef.current = term;
+    if (visible) {
+      fit.fit();
+      // Without this, the user has to click into the terminal before keystrokes
+      // land — xterm doesn't auto-focus on mount.
+      term.focus();
+    }
 
     const wsUrl = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/sessions/${sessionId}/exec`;
     const ws = new WebSocket(wsUrl);
@@ -98,17 +105,21 @@ export function Terminal({ sessionId, status, visible }: Props) {
       ws.close();
       term.dispose();
       fitRef.current = null;
+      termRef.current = null;
       wsRef.current = null;
     };
     // visible intentionally omitted — we don't tear down on hide.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, everActive]);
 
-  // Re-fit whenever this tab becomes visible. xterm computes rows/cols from
-  // the container's offsetWidth, which is 0 while display:none.
+  // Re-fit and re-focus whenever this tab becomes visible. xterm computes
+  // rows/cols from the container's offsetWidth (0 while display:none), and
+  // focus is lost when another tab steals it — refocusing on every show
+  // means tabbing back lets the user type immediately.
   useEffect(() => {
-    if (visible && fitRef.current) {
-      fitRef.current.fit();
+    if (visible) {
+      fitRef.current?.fit();
+      termRef.current?.focus();
     }
   }, [visible]);
 
