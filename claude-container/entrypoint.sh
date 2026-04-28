@@ -23,6 +23,7 @@ if [ -r "$TOKEN_PATH" ]; then
     TOKEN="$(cat $TOKEN_PATH)"
     export MCP_AZURE_BEARER="$TOKEN"
     export MCP_GITHUB_BEARER="$TOKEN"
+    export MCP_K8S_BEARER="$TOKEN"
 fi
 
 exec "$@"
