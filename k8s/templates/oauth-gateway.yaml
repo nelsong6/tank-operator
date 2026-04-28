@@ -1,20 +1,31 @@
 {{- /*
-OAuth gateway plumbing: lets the orchestrator pod impersonate
-platform.claude.com's OAuth token endpoint for in-cluster session pods.
-Read backend/src/tank_operator/oauth_gateway.py for the design rationale.
+OAuth gateway plumbing: dead-but-harmless backstop for platform.claude.com.
+
+Live as of the api-proxy cutover: api-proxy in front of api.anthropic.com
+is the only thing that reads/writes the credentials blob. claude in session
+pods never refreshes (we seed it with a far-future expiresAt), so the
+hostAlias mapping platform.claude.com → this Service in sessions.py is
+inert under steady state. We keep the cert/Service infra so the OAuth
+gateway can have logic put back without re-issuing certs to every session
+pod (NODE_EXTRA_CA_CERTS trust is rooted in the same CA).
 
 Pieces:
   - cert-manager Issuer + CA Certificate + CA Issuer + leaf Certificate
     (self-signed CA, then a leaf signed by it for platform.claude.com)
-  - ExternalSecret seeding the credentials JSON from KV (refreshInterval: 0
-    so ESO doesn't fight the gateway's writes — gateway is the steady-state
-    writer; KV is cold-storage seed; force-sync by annotation when the
-    refresh chain dies and you re-run setup-claude-credentials.ps1)
-  - RBAC: orchestrator SA gets get/patch on the credentials Secret
   - ConfigMap reflecting just ca.crt into the sessions namespace so session
     pods can mount it as their NODE_EXTRA_CA_CERTS bundle (the CA private
     key stays in tank-operator)
-  - ClusterIP Service exposing the orchestrator's HTTPS gateway port
+  - ClusterIP Service for platform.claude.com (returns 404 for everything
+    now that the FastAPI handlers are gone — that's fine)
+  - ExternalSecret syncing the credentials blob from KV into the
+    orchestrator namespace, consumed by the api-proxy and the orchestrator's
+    save-credentials path. KV is the source of truth; the api-proxy's
+    ext_proc sidecar writes rotated blobs back to KV and ESO mirrors KV →
+    Secret on a 1m interval.
+  - ExternalSecret syncing AZURE_CLIENT_ID/AZURE_TENANT_ID for the shared
+    UAMI (claude-credentials-refresher; legacy name, see infra/credential_refresher.tf).
+    Consumed by both the orchestrator (save-credentials harvest → KV) and
+    the api-proxy (ext_proc rotated-blob writes → KV).
 */}}
 apiVersion: cert-manager.io/v1
 kind: Issuer
@@ -205,11 +216,11 @@ spec:
 ---
 {{- /*
 Credentials Secret: KV is the source of truth, ESO mirrors KV → this
-Secret on a short interval (1m) so rotations performed in the
-orchestrator (see backend/src/tank_operator/sessions.py +
-refresh_credentials.py) reach the pod's mounted volume promptly. The
-orchestrator's gateway code is the reader; rotation in the same process
-is the only writer to KV.
+Secret on a short interval (1m) so rotations performed by the api-proxy's
+ext_proc sidecar (see api-proxy/src/tank_api_proxy/server.py) land on the
+api-proxy pod's mounted volume promptly. The api-proxy is the only thing
+that calls platform.claude.com's token endpoint; the orchestrator only
+writes to KV via the break-glass save-credentials path.
 
 To re-seed (refresh chain dies, etc.) use the in-app "+ config sub"
 flow which captures a logged-in credentials.json and writes it to KV
@@ -236,6 +247,45 @@ spec:
     - secretKey: {{ .Values.externalSecret.claudeCredentials.secretKey }}
       remoteRef:
         key: {{ .Values.externalSecret.claudeCredentials.kvKey }}
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
+---
+{{- /*
+Workload-identity bootstrap Secret for the shared `claude-credentials-refresher`
+UAMI (legacy name; see infra/credential_refresher.tf for why it's kept).
+Both the orchestrator (save-credentials → KV write) and the api-proxy's
+ext_proc sidecar (rotated-blob → KV write) authenticate as this UAMI.
+ESO syncs the UAMI's client_id + tenant_id from KV into envFrom-able
+fields so DefaultAzureCredential can mint a federated KV token for either
+caller.
+*/}}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ .Values.credentialRefresher.configSecret }}
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: {{ .Values.externalSecret.storeName }}
+    kind: {{ .Values.externalSecret.storeKind }}
+  target:
+    name: {{ .Values.credentialRefresher.configSecret }}
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: AZURE_CLIENT_ID
+      remoteRef:
+        key: {{ .Values.credentialRefresher.kvClientIdKey }}
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
+    - secretKey: AZURE_TENANT_ID
+      remoteRef:
+        key: {{ .Values.credentialRefresher.kvTenantIdKey }}
         conversionStrategy: Default
         decodingStrategy: None
         metadataPolicy: None

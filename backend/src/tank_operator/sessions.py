@@ -11,8 +11,6 @@ from typing import Any, AsyncIterator
 
 from kubernetes_asyncio import client, config
 
-from .refresh_credentials import refresh_now
-
 log = logging.getLogger(__name__)
 
 SESSIONS_NAMESPACE = os.environ.get("SESSIONS_NAMESPACE", "tank-operator-sessions")
@@ -116,11 +114,6 @@ class SessionManager:
         self._ws_count: dict[str, int] = {}
         self._activity: dict[str, float] = {}
         self._reaper_task: asyncio.Task[None] | None = None
-        # Serialize the inline 0 → 1 refresh in create() so concurrent
-        # session creates can't both observe an empty _activity and both
-        # call refresh_now() — that would race two rotations against
-        # Anthropic and lose one of the rotated refresh tokens.
-        self._lifecycle_lock = asyncio.Lock()
         # ClusterIP of the OAuth gateway Service — resolved once at startup
         # and stamped onto each Deployment as a hostAlias, since K8s
         # hostAliases require an IP literal, not a DNS name.
@@ -315,56 +308,22 @@ class SessionManager:
             self._oauth_gateway_ip = await self._resolve_oauth_gateway_ip()
         if self._api_proxy_ip is None:
             self._api_proxy_ip = await self._resolve_service_ip(API_PROXY_HOST, "API proxy")
-        # 0 → 1 transition for non-config sessions: rotate credentials
-        # synchronously so a freshly-woken cluster boots the first session
-        # against an up-to-date access token even if the most recent
-        # CronJob tick (templates/credential-refresher.yaml) skipped
-        # because we were idle. Periodic rotation while sessions exist is
-        # handled exclusively by the CronJob — keeping the periodic loop
-        # out of this process is what fixed the original incident (chart-
-        # bump rolling the orchestrator mid-rotation killed the refresh
-        # chain).
-        #
-        # Residual risk, KNOWINGLY left unmitigated: a chart bump that
-        # rolls the orchestrator pod during a user-driven session create
-        # could still interrupt this inline refresh between Anthropic's
-        # 200 and the KV write — same kill-the-chain failure mode. The
-        # window is much smaller than the old loop (user-triggered, not
-        # 30-min cadence) and we have not yet observed a failure on this
-        # path. Mitigations considered and deferred:
-        #   1. terminationGracePeriodSeconds + preStop sleep (~5s) on
-        #      the orchestrator Deployment — cheap, ~95% effective.
-        #   2. Drain endpoint + in-flight counter — tracks active
-        #      refreshes, blocks SIGTERM until idle. Proper fix.
-        #   3. Decouple inline refresh into a one-shot Job created from
-        #      the rotator CronJob — full isolation, costs ~2-5s of
-        #      session-create latency.
-        # Revisit if/when an inline-create rotation is observed dying.
-        #
-        # Config-mode sessions skip this — they exist to seed credentials,
-        # not consume them, and refreshing against an invalid refresh
-        # token here would fail the user's recovery flow.
-        async with self._lifecycle_lock:
-            should_kick_refresh = mode != CONFIG_MODE and not self._activity
-            session_id = uuid.uuid4().hex[:10]
-            if should_kick_refresh:
-                try:
-                    await refresh_now()
-                except Exception:
-                    log.exception(
-                        "on-create credential refresh failed; session will boot "
-                        "with whatever's currently in KV — re-seed via + config sub "
-                        "if claude can't authenticate"
-                    )
-            await self._apps.create_namespaced_deployment(
-                namespace=SESSIONS_NAMESPACE,
-                body=self._deployment_manifest(session_id, owner, mode),
-            )
-            # Seed activity so the reaper gives the session a full
-            # IDLE_TIMEOUT to receive its first WS before being eligible
-            # for deletion.
-            self._activity[session_id] = time.monotonic()
-            self._ws_count[session_id] = 0
+        # No credential refresh on the create path: the api-proxy
+        # (api-proxy/src/tank_api_proxy/server.py) owns rotation now,
+        # triggered by upstream 401s on real api.anthropic.com calls.
+        # Session pods carry a placeholder Bearer; the proxy strips it
+        # and injects the real one, refreshing against platform.claude.com
+        # behind the scenes when it observes a 401.
+        session_id = uuid.uuid4().hex[:10]
+        await self._apps.create_namespaced_deployment(
+            namespace=SESSIONS_NAMESPACE,
+            body=self._deployment_manifest(session_id, owner, mode),
+        )
+        # Seed activity so the reaper gives the session a full
+        # IDLE_TIMEOUT to receive its first WS before being eligible
+        # for deletion.
+        self._activity[session_id] = time.monotonic()
+        self._ws_count[session_id] = 0
         return SessionInfo(id=session_id, pod_name=None, owner=owner, status="Pending", mode=mode)
 
     async def list(self, owner: str) -> list[SessionInfo]:

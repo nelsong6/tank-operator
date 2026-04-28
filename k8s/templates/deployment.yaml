@@ -48,11 +48,10 @@ spec:
             - name: CLAUDE_API_PROXY_HOST
               value: {{ .Values.apiProxy.serviceHost | quote }}
             # Workload-identity wiring for the orchestrator's KV writes.
-            # Two paths use this: (1) the inline 0 → 1 refresh on session
-            # create (sessions.py), (2) the break-glass save-credentials
-            # endpoint that captures a logged-in blob from a config-mode
-            # pod. Periodic rotation lives in the CronJob defined in
-            # templates/credential-refresher.yaml — same UAMI, same env.
+            # Used only by the break-glass save-credentials endpoint that
+            # captures a logged-in blob from a config-mode pod. Steady-state
+            # credential rotation lives in the api-proxy's ext_proc sidecar
+            # (k8s/templates/api-proxy.yaml) — same UAMI, same env.
             #
             # Token file is mounted by the WI webhook because the pod
             # carries the `azure.workload.identity/use=true` label;

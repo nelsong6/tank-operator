@@ -41,9 +41,12 @@ from envoy.type.v3 import http_status_pb2
 
 log = logging.getLogger(__name__)
 
-# Same constants as backend/src/tank_operator/refresh_credentials.py — kept
-# in sync by hand. The token URL is intentionally NOT routed through the
-# proxy itself (the proxy fronts api.anthropic.com, not platform.claude.com).
+# Hardcoded into Claude Code's bundled JS. Two distinct client_ids ship in
+# the bundle: 22422756-... is paired with the legacy console.anthropic.com
+# endpoint, 9d1c250a-... with platform.claude.com (our token URL). Tied
+# here by the MANUAL_REDIRECT_URL/TOKEN_URL pairing in cli.js. The token
+# URL is intentionally NOT routed through the proxy itself — the proxy
+# fronts api.anthropic.com, not platform.claude.com.
 ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 

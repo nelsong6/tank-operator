@@ -9,10 +9,11 @@ dependencies = [
   "kubernetes-asyncio>=31.1.0",
   "pyjwt[crypto]>=2.9.0",
   "httpx>=0.27",
-  # Used by the in-process credential rotation in sessions.py +
-  # refresh_credentials.py to read/write the Anthropic OAuth blob in KV.
-  # Authenticated via workload identity (DefaultAzureCredential picks up
-  # the AKS-injected env vars and SA-token file).
+  # Used by the break-glass credentials_seed.py to write the
+  # captured Anthropic OAuth blob to KV. Steady-state rotation lives
+  # in the api-proxy, not this process. Authenticated via workload
+  # identity (DefaultAzureCredential picks up the AKS-injected env
+  # vars and SA-token file).
   "azure-identity>=1.19",
   "azure-keyvault-secrets>=4.9",
 ]

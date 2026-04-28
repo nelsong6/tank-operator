@@ -47,7 +47,7 @@ webhook only needs the pod-level label `azure.workload.identity/use=true`
 to project the federated SA token; AZURE_CLIENT_ID + AZURE_TENANT_ID
 arrive via envFrom from the ESO-synced config Secret below, so
 DefaultAzureCredential can mint a federated KV token without the
-annotation. Same pattern as credential-refresher.yaml.
+annotation. Same pattern as the orchestrator Deployment.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -206,10 +206,10 @@ data:
                           port_value: 9000
 ---
 {{- /*
-Workload-identity config secret for the ext_proc sidecar. Mirrors the
-credential refresher's pattern: ESO syncs AZURE_CLIENT_ID and
-AZURE_TENANT_ID out of KV so DefaultAzureCredential can mint a federated
-KV token for the rotated-blob write.
+Workload-identity config secret for the ext_proc sidecar. Same pattern
+as the orchestrator's: ESO syncs AZURE_CLIENT_ID and AZURE_TENANT_ID
+out of KV so DefaultAzureCredential can mint a federated KV token for
+the rotated-blob write.
 */}}
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret

@@ -11,7 +11,6 @@ from pydantic import BaseModel
 from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
 from .credentials_seed import CredentialsSeedError, harvest_and_save
 from .exec_proxy import bridge
-from .oauth_gateway import handle_bootstrap_blob, handle_oauth_token
 from .sessions import (
     DEFAULT_SESSION_MODE,
     SESSION_MODES,
@@ -50,36 +49,6 @@ class LoginResponse(BaseModel):
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.post("/v1/oauth/token")
-async def oauth_token(request: Request) -> dict[str, object]:
-    """OAuth gateway: impersonates platform.claude.com's token endpoint.
-
-    Reachable two ways:
-      - On the public listener: returns 404 because the host check fails
-        (Envoy rewrites Host to tank.romaine.life). Inert.
-      - On the in-cluster TLS listener: session pods reach this via a
-        /etc/hosts override mapping platform.claude.com to the orchestrator
-        service IP, so the Host header arrives as platform.claude.com and
-        the gateway answers.
-    See oauth_gateway.py for the design rationale.
-    """
-    return await handle_oauth_token(request)
-
-
-@app.get("/internal/credentials-bootstrap")
-async def credentials_bootstrap(request: Request) -> dict[str, object]:
-    """Returns a complete credentials.json for a session pod to write to disk.
-
-    Called once by the session container's bootstrap script. Same hostname
-    gate as /v1/oauth/token — only reachable via the in-cluster TLS
-    listener. The blob has the full original credentials.json shape (so we
-    don't have to hardcode the schema) but with a fresh access token and a
-    placeholder refresh token, so the pod never touches the real refresh
-    token.
-    """
-    return await handle_bootstrap_blob(request)
 
 
 @app.get("/api/config")
@@ -164,9 +133,9 @@ async def save_credentials(
     Only valid for sessions in `config` mode — both as a UX guard
     (the button only shows on those tabs) and as a defense-in-depth check
     so a misconfigured caller can't dump credentials out of a regular
-    session pod's mounted Secret. After write, ESO mirrors KV → mounted
-    Secret within ~1m and the orchestrator's in-process rotation (kicked
-    on the next session create) takes over from there.
+    session pod's mounted Secret. After write, ESO mirrors KV → the
+    api-proxy's mounted Secret within ~1m and the proxy's ext_proc
+    sidecar takes over rotation from the next upstream 401.
     """
     try:
         session = await sessions.get_session(owner=user.email, session_id=session_id)

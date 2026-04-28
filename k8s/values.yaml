@@ -65,31 +65,24 @@ apiProxy:
   # orchestrator's, scoped to "read+write the credentials KV secret only".
   kvClientIdKey: claude-api-proxy-mi-client-id
 
-# Anthropic credential rotation: a CronJob (templates/credential-refresher.yaml)
-# that calls Anthropic's token endpoint with the current refresh token and
-# writes the rotated blob back to KV. ESO mirrors KV → the orchestrator's
-# mounted Secret within ~1m, so the OAuth gateway picks up the new access
-# token automatically.
+# Anthropic credential rotation: lives in the api-proxy's ext_proc sidecar
+# (api-proxy/src/tank_api_proxy/server.py). The sidecar caches the access
+# token, observes upstream 401s, calls platform.claude.com with the current
+# refresh token to rotate, writes the new blob back to KV. ESO mirrors KV →
+# the proxy's mounted Secret on a 1m interval.
 #
-# Idle-skip lives in the entrypoint (tank_operator.cron_refresh): it lists
-# Deployments in the sessions namespace and exits 0 if none exist, so idle
-# clusters still do zero rotations.
-#
-# Inline rotation on the 0 → 1 session transition stays in sessions.py.create()
-# so a freshly-woken cluster boots the first session against an up-to-date
-# access token even if the most recent CronJob tick skipped.
-#
-# Authentication to KV uses the `claude-credentials-refresher` UAMI
-# (infra/credential_refresher.tf). The ExternalSecret below syncs
-# AZURE_CLIENT_ID + AZURE_TENANT_ID from KV so DefaultAzureCredential in
-# both the orchestrator (save-credentials) and the CronJob (periodic
-# rotation) can mint a federated token bound to that UAMI.
+# This values block is named `credentialRefresher` for legacy reasons —
+# the original design used a CronJob that's since been retired. The block
+# stayed because two consumers still authenticate to KV via the same UAMI:
+#   - api-proxy ext_proc sidecar: KV write of rotated blobs.
+#   - orchestrator save-credentials: KV write on "+ config sub" harvest.
+# The UAMI itself (infra/credential_refresher.tf) keeps the legacy name
+# for the same TF-state-stability reason; the ExternalSecret below syncs
+# its AZURE_CLIENT_ID + AZURE_TENANT_ID into a Secret both consumers
+# envFrom-pull, so DefaultAzureCredential mints a federated KV token
+# bound to that UAMI.
 credentialRefresher:
   configSecret: claude-credentials-refresher-config
-  # Cron schedule for the rotation Job. Anthropic access tokens are ~1h;
-  # every 30m keeps a comfortable buffer while ensuring the access token
-  # in KV doesn't go stale during a long-running session.
-  schedule: "*/30 * * * *"
   keyVaultUrl: https://romaine-kv.vault.azure.net/
   # Published to KV by infra/credential_refresher.tf (Terraform).
   kvClientIdKey: claude-credentials-refresher-mi-client-id

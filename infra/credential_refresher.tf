@@ -1,17 +1,17 @@
 # ============================================================================
-# Credential refresher — Azure side
+# Orchestrator credentials-seed UAMI — Azure side
 # ============================================================================
-# Provides the Azure identity the orchestrator uses to read+write the
-# Anthropic OAuth credentials in Key Vault. The orchestrator does
-# rotation in-process (gated on session existence) and break-glass
-# seeding via the in-app config-mode flow; both code paths authenticate
-# as this UAMI.
+# Provides the Azure identity the orchestrator uses to write the Anthropic
+# OAuth blob to Key Vault from the in-app "+ config sub" / save-credentials
+# flow (backend/src/tank_operator/credentials_seed.py). That break-glass
+# harvest is now the sole consumer of this UAMI — steady-state rotation
+# moved to the api-proxy's own UAMI (see infra/api_proxy.tf).
 #
-# (The "refresher" name is a hangover from a prior CronJob design that
-# owned this UAMI exclusively. The CronJob is gone but the UAMI is
-# reused as-is — the resource name is in K8s state and renaming it
-# would force-replace the role assignment and KV-published client_id
-# for no functional benefit.)
+# (The "refresher" name is a hangover from prior designs: first a CronJob
+# that owned this UAMI exclusively, then an in-process refresh loop in the
+# orchestrator. Both are gone but the UAMI is reused as-is — the resource
+# name is in K8s state and renaming it would force-replace the role
+# assignment and the KV-published client_id for no functional benefit.)
 # ============================================================================
 
 resource "azurerm_user_assigned_identity" "credential_refresher" {

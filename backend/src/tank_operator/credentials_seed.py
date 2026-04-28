@@ -1,17 +1,17 @@
 """Capture a logged-in credentials.json from a config-mode session pod and
 write it to Key Vault.
 
-This is the break-glass / first-time-setup path for the OAuth gateway:
-when the refresh chain dies (refresh token invalidated, e.g. because
-something else used it), the user spins up a config-mode session,
-completes `claude /login` interactively in the pod's terminal, and clicks
-"Save Credentials" — which calls this module. From here, ESO mirrors KV →
-the orchestrator's mounted Secret within ~1 minute, and the orchestrator's
-in-process rotation (sessions.py + refresh_credentials.py) takes over
-from the next session-creation event.
+This is the break-glass / first-time-setup path: when the refresh chain
+dies (refresh token invalidated, e.g. because something else used it),
+the user spins up a config-mode session, completes `claude /login`
+interactively in the pod's terminal, and clicks "Save Credentials" —
+which calls this module. From here, ESO mirrors KV → the api-proxy's
+mounted Secret within ~1 minute, and the api-proxy's ext_proc sidecar
+takes over rotation from the next upstream 401.
 
-Steady-state rotation lives in refresh_credentials.py. Don't call this on
-every refresh — it's an interactive seeding action, not a hot path.
+Steady-state rotation lives in the api-proxy
+(api-proxy/src/tank_api_proxy/server.py). Don't call this on every
+refresh — it's an interactive seeding action, not a hot path.
 """
 from __future__ import annotations
 
