@@ -1,0 +1,4 @@
+apiVersion: v2
+name: mcp-k8s
+version: 0.1.0
+description: Read-only kubectl/helm MCP server. Cluster-wide get/list/watch via the server SA's ClusterRoleBinding; incoming auth via kube-rbac-proxy K8s SA TokenReview.
