@@ -31,6 +31,11 @@ log = logging.getLogger(__name__)
 # script grew past that limit and broke reconnects.
 EXEC_COMMAND = ["bash", "-l", "/opt/tank/bootstrap.sh"]
 
+# Session pods have two containers (mcp-auth-proxy sidecar + claude). The
+# apiserver requires container= when more than one is present, otherwise
+# pods/exec returns 400 "a container name must be specified".
+SESSION_CONTAINER = "claude"
+
 STDIN_CHANNEL = 0
 STDOUT_CHANNEL = 1
 STDERR_CHANNEL = 2
@@ -56,6 +61,7 @@ async def exec_capture(namespace: str, pod_name: str, command: list[str]) -> byt
         cm = await core.connect_get_namespaced_pod_exec(
             name=pod_name,
             namespace=namespace,
+            container=SESSION_CONTAINER,
             command=command,
             stdin=False,
             stdout=True,
@@ -116,6 +122,7 @@ async def bridge(browser: WebSocket, namespace: str, pod_name: str) -> None:
     cm = await core.connect_get_namespaced_pod_exec(
         name=pod_name,
         namespace=namespace,
+        container=SESSION_CONTAINER,
         command=EXEC_COMMAND,
         stdin=True,
         stdout=True,
