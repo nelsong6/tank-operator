@@ -43,15 +43,23 @@ RUN mkdir -p /work/include \
  && cp -r envoy/api/envoy            /work/include/envoy \
  && cp -r xds/xds                    /work/include/xds \
  && cp -r pgv/validate               /work/include/validate \
- && cp -r googleapis/google          /work/include/google \
  && cp -r udpa/udpa                  /work/include/udpa \
- && cp -r opencensus/src/opencensus  /work/include/opencensus
+ && cp -r opencensus/src/opencensus  /work/include/opencensus \
+ && mkdir -p /work/include/google \
+ && cp -r googleapis/google/api      /work/include/google/api \
+ && cp -r googleapis/google/rpc      /work/include/google/rpc
+
+# Pull google/protobuf/*.proto from grpcio-tools' bundled copy so we don't
+# have to chase another upstream repo.
+RUN PROTOC_PROTOS=$(python -c "import grpc_tools, os; print(os.path.join(os.path.dirname(grpc_tools.__file__), '_proto'))") \
+ && cp -r $PROTOC_PROTOS/google/protobuf /work/include/google/protobuf
 
 WORKDIR /work/include
 
-# Compile only the proto subtrees we actually import. Everything else
-# in the bundle is transitive and only consulted via `import` statements
-# inside .proto files; protoc resolves those out of the include path.
+# Compile only the proto subtrees we actually import. The googleapis
+# top-level tree is intentionally pruned to api/+rpc/+protobuf/ — the
+# rest of googleapis (BigQuery, Vision, etc.) drags in deps we don't
+# have (grafeas) and we don't import any of it from envoy.
 RUN mkdir -p /out \
  && find envoy xds validate google udpa opencensus -name '*.proto' -print0 \
     | xargs -0 python -m grpc_tools.protoc \
