@@ -9,6 +9,11 @@ dependencies = [
     "httpx>=0.27",
     "azure-identity>=1.19",
     "azure-keyvault-secrets>=4.9",
+    # azure-identity-aio + azure-keyvault-secrets-aio default to aiohttp as
+    # the underlying transport. Bringing it in explicitly so the proxy can
+    # actually persist rotations back to KV (otherwise we'd leak rotations
+    # on every restart — see _persist_to_kv comment).
+    "aiohttp>=3.10",
 ]
 
 [build-system]

@@ -94,6 +94,13 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
         self._cached_refresh: str | None = None
         self._cached_blob: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
+        # Set when an upstream 401 is observed for the current cached
+        # token. The next request_headers callback awaits the lock (forcing
+        # a refresh to complete) before injecting; once refresh updates
+        # _cached_access we clear the flag so subsequent requests don't
+        # block. Without this, envoy's retry would re-inject the same
+        # invalid token and the retry would 401 too.
+        self._access_invalidated = False
         self._kv_url = os.environ.get("AZURE_KEYVAULT_URL", "")
         self._kv_secret_name = os.environ.get(
             "CLAUDE_CREDENTIALS_KV_KEY", "claude-code-credentials"
@@ -140,25 +147,62 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
     ) -> ext_proc_pb2.ProcessingResponse:
         status = _peek_status(msg)
         if status == 401:
-            # Don't await — Envoy's retry policy is what actually fixes
-            # the request; we just need a refresh in flight by the time
-            # the retry's request_headers callback runs. Concurrent 401s
-            # collapse to one upstream call via the asyncio.Lock.
+            # Mark the cached token poisoned so the next request_headers
+            # blocks for refresh rather than re-injecting it. Kick the
+            # refresh in the background; envoy's retry policy resends the
+            # request, and by the time the retry's request_headers callback
+            # runs the lock either holds the new token or makes us wait.
+            self._access_invalidated = True
             asyncio.create_task(self._refresh())
         return ext_proc_pb2.ProcessingResponse(response_headers=ext_proc_pb2.HeadersResponse())
 
     async def _get_access_token(self) -> str:
-        if self._cached_access is not None:
+        if self._cached_access is not None and not self._access_invalidated:
             return self._cached_access
+        # Either first request after startup (no cache) OR last response
+        # was 401 and we need to wait for the refresh task to finish.
+        # Acquiring the lock serializes us behind any in-flight refresh.
         async with self._lock:
             if self._cached_access is None:
                 self._reload_from_file()
+            if self._access_invalidated:
+                # Refresh task may have already cleared this; if not, we
+                # acquired the lock before it ran. Either way, the lock
+                # release means we're past any concurrent _refresh() call.
+                pass
         # _reload_from_file may have failed to find a token; surface as a
         # placeholder — Envoy will get 401 from upstream and retry, and
         # the retry path will trigger a refresh.
         return self._cached_access or "missing"
 
+    def _file_expires_at(self, blob: dict[str, Any]) -> int | None:
+        """Pull expiresAt (ms) out of a blob; ms-precision matters because
+        Anthropic stamps both rotated tokens with the same minute-aligned
+        value, so we use it as a freshness comparator."""
+        if not isinstance(blob, dict):
+            return None
+        for k, v in blob.items():
+            if k in ("expiresAt", "expires_at") and isinstance(v, int):
+                return v
+            if isinstance(v, dict):
+                found = self._file_expires_at(v)
+                if found:
+                    return found
+        return None
+
+    def _cached_expires_at(self) -> int | None:
+        return self._file_expires_at(self._cached_blob) if self._cached_blob else None
+
     def _reload_from_file(self) -> None:
+        """Pull the on-disk blob into the in-memory cache, but only if the
+        file is strictly fresher than memory.
+
+        Skipping a stale-file reload is the load-bearing invariant: if we
+        just rotated in-process and KV+ESO haven't propagated back yet,
+        the file holds pre-rotation tokens whose refresh has already been
+        single-use-invalidated by Anthropic. Clobbering memory with that
+        would make the next refresh 400 invalid_grant.
+        """
         try:
             with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
                 blob = json.load(f)
@@ -168,9 +212,18 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
         except Exception:
             log.exception("could not read credentials file %s", CREDENTIALS_FILE)
             return
+        file_access = _walk_for(blob, ("accessToken", "access_token"))
+        file_refresh = _walk_for(blob, ("refreshToken", "refresh_token"))
+        file_exp = self._file_expires_at(blob)
+        cached_exp = self._cached_expires_at()
+        if cached_exp is not None and file_exp is not None and file_exp <= cached_exp:
+            return  # memory is at least as fresh
+        if self._cached_access is not None and file_access == self._cached_access:
+            return  # tokens match; nothing to do
         self._cached_blob = blob
-        self._cached_access = _walk_for(blob, ("accessToken", "access_token"))
-        self._cached_refresh = _walk_for(blob, ("refreshToken", "refresh_token"))
+        self._cached_access = file_access
+        self._cached_refresh = file_refresh
+        log.info("loaded credentials from file (access prefix=%s)", (file_access or "")[:12])
 
     async def _refresh(self) -> None:
         async with self._lock:
@@ -209,6 +262,8 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
             self._cached_refresh = new_refresh
             if self._cached_blob is not None:
                 self._cached_blob = _patch_blob(self._cached_blob, new_access, new_refresh, expires_in)
+            self._access_invalidated = False
+            log.info("rotated successfully (access prefix=%s, expires in %ds)", new_access[:12], expires_in)
             await self._persist_to_kv(expires_in)
 
     async def _persist_to_kv(self, expires_in: int) -> None:
