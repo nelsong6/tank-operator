@@ -20,6 +20,26 @@ State:
     upstream call to platform.claude.com.
 
 KV write failure is non-fatal: see the comment on ``_persist_to_kv``.
+
+Anthropic-side gating gotcha (burned us during rollout verification):
+api.anthropic.com's /v1/messages endpoint refuses subscription OAuth tokens
+unless TWO request headers are set, and the error messages are misleading:
+
+  - Without ``anthropic-beta: oauth-2025-04-20`` →
+    401 "OAuth authentication is currently not supported" (it IS supported,
+    just gated behind the beta opt-in).
+  - Without ``anthropic-dangerous-direct-browser-access: true`` →
+    401 "Invalid authentication credentials" even on a freshly-minted token.
+
+claude-code itself sends both headers natively, so traffic from session
+pods works without this proxy adding them. We do NOT inject these here:
+doing so would mask a future claude-code header change rather than
+surfacing it. If you're synthetically curling api.anthropic.com to test
+this proxy, set both headers; if a real claude-code session 401s when
+synthetic curls succeed, the gate has moved and claude-code needs a bump.
+The beta string above is hardcoded in claude-code's bundled JS as of
+April 2026 — Anthropic rotating it would silently break direct callers
+but not claude-code, which ships the matching value.
 """
 from __future__ import annotations
 
