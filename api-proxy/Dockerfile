@@ -68,7 +68,8 @@ RUN find /out -type d -exec touch {}/__init__.py \;
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
 
-RUN useradd --system --uid 1000 --no-create-home --shell /usr/sbin/nologin proxy
+RUN groupadd --system --gid 65532 apiproxy \
+ && useradd --system --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin apiproxy
 
 WORKDIR /app
 
@@ -82,7 +83,7 @@ RUN pip install --no-cache-dir .
 # resolves at runtime.
 COPY --from=proto-build /out/ /usr/local/lib/python3.12/site-packages/
 
-USER proxy
+USER apiproxy
 EXPOSE 9000
 
 CMD ["python", "-m", "tank_api_proxy"]
