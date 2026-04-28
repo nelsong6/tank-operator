@@ -10,15 +10,18 @@ The `claude-container` image is built from `claude-container/` in this repo
 MCP server) and pushed to `romainecr.azurecr.io/claude-container:latest` by
 [claude-container-build.yml](.github/workflows/claude-container-build.yml).
 
-The two HTTP MCP servers it talks to also live here:
+The HTTP MCP servers it talks to also live here:
 
 - `k8s-mcp-azure/` — Helm chart wrapping Microsoft's `azure-mcp` image, fronted by kube-rbac-proxy.
 - `k8s-mcp-github/` + `mcp-servers/github/` — chart + Python source for a custom GitHub App-backed MCP server. Built by [mcp-github-build.yml](.github/workflows/mcp-github-build.yml).
+- `k8s-mcp-k8s/` + `mcp-servers/k8s/` — chart + Python source for a read-only kubectl/helm MCP. Built by [mcp-k8s-build.yml](.github/workflows/mcp-k8s-build.yml).
+- `k8s-mcp-argocd/` + `mcp-servers/argocd/` — chart + Python source for a read-only ArgoCD MCP that authenticates outbound via Dex SA-token exchange. Built by [mcp-argocd-build.yml](.github/workflows/mcp-argocd-build.yml).
 
-UAMIs, federated credentials, and ACR push SPs for all of the above are
-managed under `infra/` (`mcp.tf`, `mcp-server/`, `claude_container_ci.tf`,
-`mcp_github_ci.tf`). Shared cluster infrastructure (the AKS cluster itself,
-the ACR, the Key Vault) lives in
+Runtime UAMIs (e.g. `mcp.tf`, `mcp-server/`) live under `infra/`. CI auth
+(image-push to ACR) for every workflow uses `vars.ARM_CLIENT_ID` — the
+identity infra-bootstrap mints for tank-operator via
+`module.app["tank-operator"]`. Shared cluster infrastructure (the AKS
+cluster itself, the ACR, the Key Vault) also lives in
 [infra-bootstrap](https://github.com/nelsong6/infra-bootstrap) and is
 referenced here as data sources.
 
