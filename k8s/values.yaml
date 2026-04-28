@@ -20,7 +20,7 @@ orchestrator:
 session:
   # SHA-pinned. claude-container-build.yml rewrites the tag suffix on every
   # push to main via a `[skip ci]` follow-up commit.
-  image: romainecr.azurecr.io/claude-container:ea1abc0
+  image: romainecr.azurecr.io/claude-container:0ec5e0f
   serviceAccount: claude-session
   # Idle reaper: a session with no open WebSocket connections for this many
   # seconds is deleted by the orchestrator's background sweep. Honors the
