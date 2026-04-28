@@ -45,6 +45,8 @@ spec:
               value: /etc/claude-credentials/{{ .Values.externalSecret.claudeCredentials.secretKey }}
             - name: CLAUDE_OAUTH_GATEWAY_HOST
               value: {{ .Values.oauthGateway.serviceHost | quote }}
+            - name: CLAUDE_API_PROXY_HOST
+              value: {{ .Values.apiProxy.serviceHost | quote }}
             # Workload-identity wiring for the orchestrator's KV writes.
             # Two paths use this: (1) the inline 0 → 1 refresh on session
             # create (sessions.py), (2) the break-glass save-credentials

@@ -28,6 +28,16 @@ OAUTH_GATEWAY_HOST = os.environ.get(
     "claude-oauth-gateway.tank-operator.svc.cluster.local",
 )
 OAUTH_GATEWAY_CA_CONFIGMAP = os.environ.get("CLAUDE_OAUTH_GATEWAY_CA_CONFIGMAP", "claude-oauth-ca")
+# In-cluster proxy that fronts api.anthropic.com. Same hostAlias trick as
+# the OAuth gateway (DNS resolution at orchestrator startup, IP literal
+# stamped onto each Deployment manifest). Pods send their requests to
+# api.anthropic.com normally; the proxy strips their placeholder
+# Authorization header, injects the current real OAuth Bearer, and
+# refreshes against platform.claude.com on upstream 401.
+API_PROXY_HOST = os.environ.get(
+    "CLAUDE_API_PROXY_HOST",
+    "claude-api-proxy.tank-operator.svc.cluster.local",
+)
 # Stamping these on each session Deployment makes ArgoCD claim it into the
 # tank-operator-sessions Application's resource tree (visible alongside the
 # orchestrator's chart-managed resources). That app has no auto-sync, so
@@ -115,6 +125,8 @@ class SessionManager:
         # and stamped onto each Deployment as a hostAlias, since K8s
         # hostAliases require an IP literal, not a DNS name.
         self._oauth_gateway_ip: str | None = None
+        # Same idea for the api.anthropic.com proxy — see API_PROXY_HOST.
+        self._api_proxy_ip: str | None = None
 
     async def startup(self) -> None:
         try:
@@ -125,22 +137,26 @@ class SessionManager:
         self._apps = client.AppsV1Api(self._api)
         self._core = client.CoreV1Api(self._api)
         self._oauth_gateway_ip = await self._resolve_oauth_gateway_ip()
+        self._api_proxy_ip = await self._resolve_service_ip(API_PROXY_HOST, "API proxy")
         self._reaper_task = asyncio.create_task(self._reaper_loop())
 
     async def _resolve_oauth_gateway_ip(self) -> str | None:
-        """Resolve the OAuth gateway Service's ClusterIP via cluster DNS.
+        return await self._resolve_service_ip(OAUTH_GATEWAY_HOST, "OAuth gateway")
+
+    async def _resolve_service_ip(self, host: str, label: str) -> str | None:
+        """Resolve an in-cluster Service's ClusterIP via DNS.
 
         Returns None if resolution fails — callers should treat this as
-        "OAuth gateway not deployed yet" and skip stamping the hostAlias
-        rather than failing session creation. (Useful for first-install or
-        local dev where the chart isn't fully reconciled.)
+        "service not deployed yet" and skip stamping the hostAlias
+        rather than failing session creation. (Useful for first-install
+        or local dev where the chart isn't fully reconciled.)
         """
         try:
             loop = asyncio.get_event_loop()
-            infos = await loop.getaddrinfo(OAUTH_GATEWAY_HOST, None, type=socket.SOCK_STREAM)
+            infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
             return infos[0][4][0]
         except Exception:
-            log.warning("could not resolve OAuth gateway %s; sessions will boot without it", OAUTH_GATEWAY_HOST)
+            log.warning("could not resolve %s %s; sessions will boot without it", label, host)
             return None
 
     async def shutdown(self) -> None:
@@ -216,10 +232,21 @@ class SessionManager:
         # /login`, which has to reach the REAL platform.claude.com to
         # complete OAuth. Pointing it at our in-cluster gateway would make
         # the auth endpoints 404.
-        if self._oauth_gateway_ip and mode != CONFIG_MODE:
-            pod_spec["hostAliases"] = [
-                {"ip": self._oauth_gateway_ip, "hostnames": ["platform.claude.com"]}
-            ]
+        if mode != CONFIG_MODE and (self._oauth_gateway_ip or self._api_proxy_ip):
+            host_aliases: list[dict[str, Any]] = []
+            if self._oauth_gateway_ip:
+                host_aliases.append(
+                    {"ip": self._oauth_gateway_ip, "hostnames": ["platform.claude.com"]}
+                )
+            # api.anthropic.com is hijacked to the in-cluster proxy. The
+            # proxy's leaf cert is signed by the same `claude-oauth-ca` the
+            # session pod already trusts via NODE_EXTRA_CA_CERTS, so no
+            # extra trust-store wiring is needed.
+            if self._api_proxy_ip:
+                host_aliases.append(
+                    {"ip": self._api_proxy_ip, "hostnames": ["api.anthropic.com"]}
+                )
+            pod_spec["hostAliases"] = host_aliases
             container = pod_spec["containers"][0]
             container["env"].append(
                 {"name": "NODE_EXTRA_CA_CERTS", "value": "/etc/oauth-gateway-ca/ca.crt"}
@@ -280,12 +307,14 @@ class SessionManager:
         assert self._apps is not None
         if mode not in SESSION_MODES:
             raise ValueError(f"unknown session mode: {mode!r}")
-        # Lazy retry of OAuth gateway resolution — handles the chart-install
-        # race where the orchestrator pod starts before its sibling Service
-        # exists. After first successful resolution the IP is cached; if the
-        # Service is ever recreated (rare), restart the orchestrator.
+        # Lazy retry of in-cluster Service resolution — handles the
+        # chart-install race where the orchestrator pod starts before its
+        # sibling Services exist. After first success the IP is cached;
+        # if a Service is ever recreated (rare), restart the orchestrator.
         if self._oauth_gateway_ip is None:
             self._oauth_gateway_ip = await self._resolve_oauth_gateway_ip()
+        if self._api_proxy_ip is None:
+            self._api_proxy_ip = await self._resolve_service_ip(API_PROXY_HOST, "API proxy")
         # 0 → 1 transition for non-config sessions: rotate credentials
         # synchronously so a freshly-woken cluster boots the first session
         # against an up-to-date access token even if the most recent

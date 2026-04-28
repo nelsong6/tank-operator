@@ -46,17 +46,16 @@ log = logging.getLogger(__name__)
 #                                   from claude-container/mcp.json in this
 #                                   repo, along with the env-var contract its
 #                                   servers expect)
-#   ~/.claude/.credentials.json   — only in subscription mode: a credentials
-#                                   blob fetched at boot from the orchestrator's
-#                                   in-cluster OAuth gateway (which impersonates
-#                                   platform.claude.com via /etc/hosts +
-#                                   NODE_EXTRA_CA_CERTS). The blob has a fresh
-#                                   access token + a placeholder refresh token —
-#                                   the real refresh token never enters the
-#                                   pod. When claude later refreshes, it hits
-#                                   the same gateway and gets a new access
-#                                   token; the gateway is the only thing that
-#                                   ever touches Anthropic's OAuth endpoint.
+#   ~/.claude/.credentials.json   — only in subscription mode: a static
+#                                   placeholder blob. The real token is
+#                                   never written to the pod. The
+#                                   in-cluster api-proxy (api.anthropic.com
+#                                   redirected to a Service via hostAlias,
+#                                   trusted via NODE_EXTRA_CA_CERTS) strips
+#                                   whatever Authorization claude sends and
+#                                   injects the current real Bearer on the
+#                                   way upstream. claude believes it's
+#                                   talking to api.anthropic.com directly.
 # claude runs inside a named tmux session ("tank") so that when the
 # browser WS drops and reconnects, the new kubectl-exec re-attaches to
 # the same session — preserving the in-progress conversation, scrollback,
@@ -113,25 +112,26 @@ if [ -f /workspace/.mcp.json ]; then
 fi
 case "${TANK_SESSION_MODE:-api_key}" in
   subscription)
-    # Fetch a fresh credentials.json from the in-cluster OAuth gateway. The
-    # gateway returns the original blob shape (preserved from KV) but with a
-    # fresh access token from its single-flight cache and a placeholder
-    # refresh token, so the pod never gets the real refresh token. /etc/hosts
-    # routes platform.claude.com to the gateway Service; NODE_EXTRA_CA_CERTS
-    # makes the cluster's self-signed CA trusted so curl + claude both
-    # accept the gateway's cert.
+    # Static placeholder credentials. The api-proxy in front of
+    # api.anthropic.com strips this Authorization on every request and
+    # injects the real token, so claude never needs valid creds locally.
+    # expiresAt is set to year 2286 so claude never decides to refresh
+    # on its own; the placeholder refreshToken would 400 immediately at
+    # platform.claude.com if it ever did.
     creds_path=$HOME/.claude/.credentials.json
-    if curl -sS --fail --max-time 15 \
-         --cacert /etc/oauth-gateway-ca/ca.crt \
-         "https://platform.claude.com/internal/credentials-bootstrap" \
-         -o "$creds_path"; then
-      chmod 600 "$creds_path"
-    else
-      echo "tank-operator: failed to fetch credentials from OAuth gateway." >&2
-      echo "Check that claude-oauth-gateway service is healthy and the CA" >&2
-      echo "ConfigMap is reflected into this namespace; the session will" >&2
-      echo "fall through to claude /login, which won't work without a browser." >&2
-    fi
+    cat > "$creds_path" <<'EOF'
+{
+  "claudeAiOauth": {
+    "accessToken": "managed-by-tank-operator",
+    "refreshToken": "managed-by-tank-operator",
+    "expiresAt": 9999999999000,
+    "scopes": ["user:inference", "user:profile"],
+    "subscriptionType": "max",
+    "rateLimitTier": "max"
+  }
+}
+EOF
+    chmod 600 "$creds_path"
     unset ANTHROPIC_API_KEY
     api_key_block=''
     ;;
