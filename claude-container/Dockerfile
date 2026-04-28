@@ -1,7 +1,9 @@
-# azure-mcp + github-mcp run as in-cluster HTTP MCP servers (see
-# k8s-mcp-azure/ and k8s-mcp-github/). The container talks to them over
-# HTTP using the pod's projected SA token as the bearer. No co-located
-# binaries needed — keep this image minimal.
+# azure-mcp + github-mcp + k8s-mcp run as in-cluster HTTP MCP servers
+# (see k8s-mcp-azure/, k8s-mcp-github/, k8s-mcp-k8s/). The container
+# reaches them via the mcp-auth-proxy sidecar on 127.0.0.1, which reads
+# the projected SA token fresh per request and forwards as a Bearer
+# token. No co-located MCP binaries needed in this image — keep it
+# minimal.
 FROM node:20-alpine
 
 ARG TARGETARCH=amd64
@@ -38,15 +40,24 @@ RUN npm install -g @anthropic-ai/claude-code
 COPY claude-container/platform-mcp /opt/platform-mcp
 RUN pip install --no-cache-dir --break-system-packages /opt/platform-mcp
 
+# Localhost reverse proxy that injects fresh SA-token bearer auth into
+# outbound HTTP MCP calls. Runs as a sidecar container in the session
+# pod (same image, command "mcp-auth-proxy"). See server.py for the
+# full rationale — TL;DR fixes the 1h SA-token expiry that froze the
+# bearer in env vars.
+COPY claude-container/mcp-auth-proxy /opt/mcp-auth-proxy
+RUN pip install --no-cache-dir --break-system-packages /opt/mcp-auth-proxy
+
 # Default MCP wiring for the in-container agent. Lives in /workspace so
 # Claude Code picks it up as project-scope config; also kept at
 # /opt/claude-container/mcp.json for users who mount their own /workspace.
 COPY claude-container/mcp.json /opt/claude-container/mcp.json
 RUN mkdir -p /workspace && cp /opt/claude-container/mcp.json /workspace/.mcp.json
 
-# Entrypoint reads the SA token at container start and exports
-# MCP_*_BEARER env vars that mcp.json's ${VAR} interpolation
-# substitutes into the Authorization headers.
+# Thin passthrough entrypoint kept for direct `docker run` / `kubectl
+# exec` consumers. The orchestrator's bridge bypasses ENTRYPOINT (sets
+# command: ["sleep", "infinity"]) and runs its own bootstrap shell.
+# In-cluster MCP auth is handled by the mcp-auth-proxy sidecar above.
 COPY claude-container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

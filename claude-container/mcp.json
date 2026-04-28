@@ -2,24 +2,15 @@
   "mcpServers": {
     "azure": {
       "type": "http",
-      "url": "http://mcp-azure.mcp-azure.svc:80/",
-      "headers": {
-        "Authorization": "Bearer ${MCP_AZURE_BEARER}"
-      }
+      "url": "http://127.0.0.1:9991/"
     },
     "github": {
       "type": "http",
-      "url": "http://mcp-github.mcp-github.svc:80/",
-      "headers": {
-        "Authorization": "Bearer ${MCP_GITHUB_BEARER}"
-      }
+      "url": "http://127.0.0.1:9992/"
     },
     "k8s": {
       "type": "http",
-      "url": "http://mcp-k8s.mcp-k8s.svc:80/",
-      "headers": {
-        "Authorization": "Bearer ${MCP_K8S_BEARER}"
-      }
+      "url": "http://127.0.0.1:9993/"
     },
     "platform": {
       "command": "platform-mcp"

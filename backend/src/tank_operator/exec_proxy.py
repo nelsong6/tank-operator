@@ -91,17 +91,10 @@ EOF
 EOF
   exec claude /login
 fi
-# Read the projected SA token and export it as the Authorization bearer
-# for both HTTP MCP servers. claude-container's image-level entrypoint.sh
-# does this too, but kubectl exec starts a fresh shell that doesn't
-# inherit env from PID 1 — so we have to redo it here for the in-pod
-# claude process to pick it up.
-TOKEN_PATH=/var/run/secrets/kubernetes.io/serviceaccount/token
-if [ -r "$TOKEN_PATH" ]; then
-  TOKEN="$(cat $TOKEN_PATH)"
-  export MCP_AZURE_BEARER="$TOKEN"
-  export MCP_GITHUB_BEARER="$TOKEN"
-fi
+# MCP auth is delegated to the mcp-auth-proxy sidecar — claude reaches
+# in-cluster HTTP MCP servers via 127.0.0.1 ports declared in
+# /workspace/.mcp.json, and the sidecar reads the projected SA token
+# fresh per request. No bearer-env-var wiring needed here anymore.
 mkdir -p $HOME/.claude
 cat > $HOME/.claude/settings.json <<'EOF'
 {"theme":"dark","permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true}

@@ -180,6 +180,20 @@ class SessionManager:
                 "fsGroup": 1000,
             },
             "containers": [
+                # Sidecar: localhost reverse proxy that injects fresh SA-token
+                # bearer auth into outbound HTTP MCP calls. Same image as the
+                # main container, different command. Required because the
+                # projected SA token rotates in-place on disk every ~50min,
+                # but env vars set from it at pod start go stale — this proxy
+                # reads the file per request so .mcp.json's localhost URLs
+                # (see claude-container/mcp.json) get a fresh Bearer every
+                # call. See claude-container/mcp-auth-proxy/src/.../server.py.
+                {
+                    "name": "mcp-auth-proxy",
+                    "image": SESSION_IMAGE,
+                    "imagePullPolicy": "Always",
+                    "command": ["mcp-auth-proxy"],
+                },
                 {
                     "name": "claude",
                     "image": SESSION_IMAGE,
