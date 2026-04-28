@@ -12,6 +12,10 @@
       "type": "http",
       "url": "http://127.0.0.1:9993/"
     },
+    "argocd": {
+      "type": "http",
+      "url": "http://127.0.0.1:9994/"
+    },
     "platform": {
       "command": "platform-mcp"
     }
