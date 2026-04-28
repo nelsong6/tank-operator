@@ -203,6 +203,16 @@ class SessionManager:
                         # auto-wrap, and xterm.js's built-in OSC 8
                         # support renders them natively.
                         {"name": "FORCE_HYPERLINK", "value": "1"},
+                        # Switch claude's TUI to the alternate-screen-buffer
+                        # renderer (vim/htop-style) instead of the default
+                        # in-place redraw. Fixes the documented Ink
+                        # SIGWINCH redraw-leak (anthropics/claude-code#49086)
+                        # and full-buffer redraw drift (#29937) — both of
+                        # which manifest as ghost lines and post-resize text
+                        # collisions in xterm.js, since xterm.js is the same
+                        # rendering-throughput-bound consumer class as the
+                        # VS Code integrated terminal that the docs call out.
+                        {"name": "CLAUDE_CODE_NO_FLICKER", "value": "1"},
                     ],
                     "envFrom": [
                         {"secretRef": {"name": GITHUB_APP_SECRET}},
