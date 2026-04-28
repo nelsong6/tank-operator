@@ -1,0 +1,323 @@
+{{- /*
+Anthropic API proxy: Envoy in front of api.anthropic.com plus a small
+ext_proc gRPC sidecar that injects the current real OAuth Authorization
+on every request and single-flight-refreshes against platform.claude.com
+on upstream 401.
+
+Why this exists: the previous design had session pods cache an access
+token until a locally-stamped expiry and a CronJob rotate refresh+access
+on a clock. Anthropic invalidates the previous access token whenever the
+refresh token rotates, so every cron tick guaranteed a 401 on any pod
+holding a cached previous token — and claude does NOT auto-refresh on
+401, it tells the user to /login. Putting a transparent inline proxy in
+front of api.anthropic.com decouples token lifecycle from pod lifetime:
+pods get a placeholder Bearer, the proxy strips it and stamps the real
+one, and pods never participate in OAuth.
+
+Why ext_proc rather than a FastAPI all-in-one: Envoy gives us mature
+HTTP/2, streaming, retry-on-status, real upstream TLS validation, and
+sane timeouts; the auth-injection logic is small enough to keep in a
+sidecar without re-implementing the rest. A compact Python ext_proc
+service is the smallest piece of code we can own that handles refresh
+correctly — it doesn't process bodies, only headers.
+
+CA reuse: session pods already trust `claude-oauth-ca` (mounted as
+NODE_EXTRA_CA_CERTS by sessions.py for the platform.claude.com gateway).
+We issue a second leaf from the same Issuer so pods trust this proxy's
+api.anthropic.com cert without any new trust-store work in the image.
+*/}}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: claude-api-proxy-leaf
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  secretName: claude-api-proxy-leaf
+  duration: 2160h  # 90 days
+  renewBefore: 360h
+  dnsNames:
+    - api.anthropic.com
+  issuerRef:
+    name: claude-oauth-ca-issuer
+    kind: Issuer
+---
+{{- /*
+SA carries no azure.workload.identity/client-id annotation. The WI
+webhook only needs the pod-level label `azure.workload.identity/use=true`
+to project the federated SA token; AZURE_CLIENT_ID + AZURE_TENANT_ID
+arrive via envFrom from the ESO-synced config Secret below, so
+DefaultAzureCredential can mint a federated KV token without the
+annotation. Same pattern as credential-refresher.yaml.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.apiProxy.serviceAccount }}
+  namespace: {{ .Values.namespaces.orchestrator }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-api-proxy
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  selector:
+    app.kubernetes.io/name: claude-api-proxy
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8443
+---
+{{- /*
+Envoy config. Top-of-config rationale:
+
+  - HTTPS listener with the in-cluster CA leaf (api.anthropic.com SAN).
+    Pods reach this via a hostAlias mapping api.anthropic.com to this
+    Service's ClusterIP and trust the leaf via NODE_EXTRA_CA_CERTS.
+  - Single upstream cluster `anthropic_api` to the real api.anthropic.com,
+    HTTP/2, auto_sni, system trust store for upstream TLS verification.
+  - One ext_proc filter on the request side that calls the local sidecar
+    on 127.0.0.1:9000 — strips Authorization, injects the current Bearer.
+    On response, the same filter peeks :status; the sidecar treats 401 as
+    a refresh trigger.
+  - Retry policy: retriable_status_codes=[401], num_retries=1. Envoy
+    re-runs the filter chain on retry, so the second pass picks up the
+    refreshed token automatically.
+  - 600s per-request timeout: Anthropic's streaming responses can be
+    long-lived (large outputs, slow tool turns).
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-api-proxy-envoy
+  namespace: {{ .Values.namespaces.orchestrator }}
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 127.0.0.1, port_value: 9901 }
+    static_resources:
+      listeners:
+        - name: api_listener
+          address:
+            socket_address: { address: 0.0.0.0, port_value: 8443 }
+          per_connection_buffer_limit_bytes: 1048576
+          filter_chains:
+            - transport_socket:
+                name: envoy.transport_sockets.tls
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+                  common_tls_context:
+                    tls_certificates:
+                      - certificate_chain: { filename: /etc/envoy/tls/tls.crt }
+                        private_key:       { filename: /etc/envoy/tls/tls.key }
+              filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: api_proxy
+                    codec_type: AUTO
+                    stream_idle_timeout: 600s
+                    request_timeout: 600s
+                    common_http_protocol_options:
+                      idle_timeout: 600s
+                    http_filters:
+                      - name: envoy.filters.http.ext_proc
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+                          grpc_service:
+                            envoy_grpc:
+                              cluster_name: ext_proc_local
+                            timeout: 5s
+                          failure_mode_allow: false
+                          processing_mode:
+                            request_header_mode: SEND
+                            response_header_mode: SEND
+                            request_body_mode: NONE
+                            response_body_mode: NONE
+                            request_trailer_mode: SKIP
+                            response_trailer_mode: SKIP
+                          message_timeout: 5s
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                    route_config:
+                      name: anthropic
+                      virtual_hosts:
+                        - name: anthropic
+                          domains: ["*"]
+                          routes:
+                            - match: { prefix: "/" }
+                              route:
+                                cluster: anthropic_api
+                                timeout: 600s
+                                retry_policy:
+                                  retry_on: "retriable-status-codes"
+                                  retriable_status_codes: [401]
+                                  num_retries: 1
+                                  per_try_timeout: 600s
+                                auto_host_rewrite: true
+      clusters:
+        - name: anthropic_api
+          type: LOGICAL_DNS
+          connect_timeout: 5s
+          dns_lookup_family: V4_ONLY
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          load_assignment:
+            cluster_name: anthropic_api
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: api.anthropic.com
+                          port_value: 443
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+              sni: api.anthropic.com
+              common_tls_context:
+                validation_context:
+                  trusted_ca:
+                    filename: /etc/ssl/certs/ca-certificates.crt
+        - name: ext_proc_local
+          type: STATIC
+          connect_timeout: 1s
+          lb_policy: ROUND_ROBIN
+          typed_extension_protocol_options:
+            envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+              "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+              explicit_http_config:
+                http2_protocol_options: {}
+          load_assignment:
+            cluster_name: ext_proc_local
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          address: 127.0.0.1
+                          port_value: 9000
+---
+{{- /*
+Workload-identity config secret for the ext_proc sidecar. Mirrors the
+credential refresher's pattern: ESO syncs AZURE_CLIENT_ID and
+AZURE_TENANT_ID out of KV so DefaultAzureCredential can mint a federated
+KV token for the rotated-blob write.
+*/}}
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ .Values.apiProxy.configSecret }}
+  namespace: {{ .Values.namespaces.orchestrator }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: {{ .Values.externalSecret.storeName }}
+    kind: {{ .Values.externalSecret.storeKind }}
+  target:
+    name: {{ .Values.apiProxy.configSecret }}
+    creationPolicy: Owner
+    deletionPolicy: Retain
+  data:
+    - secretKey: AZURE_CLIENT_ID
+      remoteRef:
+        key: {{ .Values.apiProxy.kvClientIdKey }}
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
+    - secretKey: AZURE_TENANT_ID
+      remoteRef:
+        key: {{ .Values.credentialRefresher.kvTenantIdKey }}
+        conversionStrategy: Default
+        decodingStrategy: None
+        metadataPolicy: None
+        nullBytePolicy: Ignore
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-api-proxy
+  namespace: {{ .Values.namespaces.orchestrator }}
+  labels:
+    app.kubernetes.io/name: claude-api-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: claude-api-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: claude-api-proxy
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ .Values.apiProxy.serviceAccount }}
+      containers:
+        - name: envoy
+          image: {{ .Values.apiProxy.envoyImage | quote }}
+          args:
+            - "-c"
+            - "/etc/envoy/envoy.yaml"
+            - "--service-cluster"
+            - "claude-api-proxy"
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: admin
+              containerPort: 9901
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+            - name: leaf-tls
+              mountPath: /etc/envoy/tls
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 3
+            periodSeconds: 10
+        - name: ext-proc
+          image: "{{ .Values.apiProxy.image.repository }}:{{ .Values.apiProxy.image.tag }}"
+          imagePullPolicy: {{ .Values.apiProxy.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: 9000
+          env:
+            - name: CLAUDE_CREDENTIALS_FILE
+              value: /etc/claude-credentials/{{ .Values.externalSecret.claudeCredentials.secretKey }}
+            - name: AZURE_KEYVAULT_URL
+              value: {{ .Values.credentialRefresher.keyVaultUrl | quote }}
+            - name: CLAUDE_CREDENTIALS_KV_KEY
+              value: {{ .Values.externalSecret.claudeCredentials.kvKey | quote }}
+            - name: AZURE_FEDERATED_TOKEN_FILE
+              value: /var/run/secrets/azure/tokens/azure-identity-token
+            - name: AZURE_AUTHORITY_HOST
+              value: https://login.microsoftonline.com/
+          envFrom:
+            - secretRef:
+                name: {{ .Values.apiProxy.configSecret }}
+          volumeMounts:
+            - name: claude-credentials
+              mountPath: /etc/claude-credentials
+              readOnly: true
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: claude-api-proxy-envoy
+        - name: leaf-tls
+          secret:
+            secretName: claude-api-proxy-leaf
+            optional: true  # cert-manager hasn't issued yet on first install
+        - name: claude-credentials
+          secret:
+            secretName: {{ .Values.externalSecret.claudeCredentials.secretName }}
+            optional: true

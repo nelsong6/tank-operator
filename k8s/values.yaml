@@ -43,6 +43,28 @@ ingress:
 oauthGateway:
   serviceHost: claude-oauth-gateway.tank-operator.svc.cluster.local
 
+# Anthropic API proxy: Envoy + ext_proc sidecar in front of api.anthropic.com.
+# Session pods get a hostAlias mapping api.anthropic.com to this service's
+# ClusterIP and the proxy injects the real OAuth Authorization on every
+# request. See k8s/templates/api-proxy.yaml for the design rationale.
+apiProxy:
+  image:
+    repository: romainecr.azurecr.io/api-proxy
+    # SHA-pinned. The api-proxy build workflow rewrites this line on every
+    # push to main via a `[skip ci]` follow-up commit. The 4-space indent
+    # is load-bearing — the bump-tag sed in .github/workflows/api-proxy-build.yml
+    # anchors to it so the orchestrator's 2-space `  tag:` line in this same
+    # file isn't accidentally rewritten.
+    tag: "d5b2f20"
+    pullPolicy: IfNotPresent
+  envoyImage: envoyproxy/envoy:v1.34-latest
+  serviceAccount: claude-api-proxy
+  serviceHost: claude-api-proxy.tank-operator.svc.cluster.local
+  configSecret: claude-api-proxy-config
+  # Published to KV by infra/api_proxy.tf — separate UAMI from the
+  # orchestrator's, scoped to "read+write the credentials KV secret only".
+  kvClientIdKey: claude-api-proxy-mi-client-id
+
 # Anthropic credential rotation: a CronJob (templates/credential-refresher.yaml)
 # that calls Anthropic's token endpoint with the current refresh token and
 # writes the rotated blob back to KV. ESO mirrors KV → the orchestrator's
