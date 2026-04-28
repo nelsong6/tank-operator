@@ -56,13 +56,44 @@ RUN PROTOC_PROTOS=$(python -c "import grpc_tools, os; print(os.path.join(os.path
 
 WORKDIR /work/include
 
-# Compile only the proto subtrees we actually import. The googleapis
-# top-level tree is intentionally pruned to api/+rpc/+protobuf/ — the
-# rest of googleapis (BigQuery, Vision, etc.) drags in deps we don't
-# have (grafeas) and we don't import any of it from envoy.
+# Compute the import closure starting from external_processor.proto and
+# compile only that set. Compiling all of envoy/* drags in metrics +
+# prometheus deps we don't vendor; everything we actually call into
+# from server.py is reachable from this single root.
+RUN cat > /tmp/closure.py <<'PY'
+import os, re, sys
+ROOTS = [
+    "envoy/service/ext_proc/v3/external_processor.proto",
+    "envoy/config/core/v3/base.proto",
+    "envoy/extensions/filters/http/ext_proc/v3/processing_mode.proto",
+    "envoy/type/v3/http_status.proto",
+]
+SEARCH = "/work/include"
+seen = set()
+queue = list(ROOTS)
+imp_re = re.compile(r'^\s*import\s+(?:public\s+|weak\s+)?"([^"]+)"\s*;', re.M)
+while queue:
+    rel = queue.pop()
+    if rel in seen:
+        continue
+    seen.add(rel)
+    abs_path = os.path.join(SEARCH, rel)
+    if not os.path.exists(abs_path):
+        # google/protobuf/* lives under grpc_tools _proto; we copied it
+        # in already so this should resolve.
+        sys.stderr.write(f"missing: {rel}\n")
+        continue
+    text = open(abs_path).read()
+    for m in imp_re.finditer(text):
+        queue.append(m.group(1))
+for f in sorted(seen):
+    print(f)
+PY
 RUN mkdir -p /out \
- && find envoy xds validate google udpa opencensus -name '*.proto' -print0 \
-    | xargs -0 python -m grpc_tools.protoc \
+ && python /tmp/closure.py > /tmp/protos.txt \
+ && wc -l /tmp/protos.txt \
+ && cd /work/include \
+ && xargs -a /tmp/protos.txt python -m grpc_tools.protoc \
         -I /work/include \
         --python_out=/out \
         --grpc_python_out=/out
