@@ -40,13 +40,6 @@ ARGOCD_TRACKING_APP = os.environ.get("ARGOCD_TRACKING_APP", "tank-operator-sessi
 # README's "killed when the tab closes" promise.
 IDLE_TIMEOUT_SECONDS = int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))
 REAPER_INTERVAL_SECONDS = int(os.environ.get("REAPER_INTERVAL_SECONDS", "60"))
-# Anthropic OAuth refresh cadence WHILE sessions exist. Idle clusters do
-# zero rotations — the timer is started on the 0 → 1 session transition
-# and cancelled on 1 → 0. 30m matches the prior CronJob cadence and gives
-# a comfortable buffer under typical 1h access-token TTLs.
-CREDENTIAL_REFRESH_INTERVAL_SECONDS = int(
-    os.environ.get("CREDENTIAL_REFRESH_INTERVAL_SECONDS", "1800")
-)
 
 
 class SessionNotFound(Exception):
@@ -113,13 +106,10 @@ class SessionManager:
         self._ws_count: dict[str, int] = {}
         self._activity: dict[str, float] = {}
         self._reaper_task: asyncio.Task[None] | None = None
-        # Periodic credential rotation, only running while at least one
-        # session exists. See _ensure_credential_refresh_running and
-        # _maybe_stop_credential_refresh.
-        self._credential_refresh_task: asyncio.Task[None] | None = None
-        # Serialize lifecycle hooks (create/delete) so concurrent calls
-        # can't both observe the same 0 → 1 transition (would refresh
-        # twice) or 1 → 0 (would race the timer cancel against itself).
+        # Serialize the inline 0 → 1 refresh in create() so concurrent
+        # session creates can't both observe an empty _activity and both
+        # call refresh_now() — that would race two rotations against
+        # Anthropic and lose one of the rotated refresh tokens.
         self._lifecycle_lock = asyncio.Lock()
         # ClusterIP of the OAuth gateway Service — resolved once at startup
         # and stamped onto each Deployment as a hostAlias, since K8s
@@ -158,10 +148,6 @@ class SessionManager:
             self._reaper_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reaper_task
-        if self._credential_refresh_task is not None:
-            self._credential_refresh_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._credential_refresh_task
         if self._api is not None:
             await self._api.close()
 
@@ -288,16 +274,37 @@ class SessionManager:
         # Service is ever recreated (rare), restart the orchestrator.
         if self._oauth_gateway_ip is None:
             self._oauth_gateway_ip = await self._resolve_oauth_gateway_ip()
+        # 0 → 1 transition for non-config sessions: rotate credentials
+        # synchronously so a freshly-woken cluster boots the first session
+        # against an up-to-date access token even if the most recent
+        # CronJob tick (templates/credential-refresher.yaml) skipped
+        # because we were idle. Periodic rotation while sessions exist is
+        # handled exclusively by the CronJob — keeping the periodic loop
+        # out of this process is what fixed the original incident (chart-
+        # bump rolling the orchestrator mid-rotation killed the refresh
+        # chain).
+        #
+        # Residual risk, KNOWINGLY left unmitigated: a chart bump that
+        # rolls the orchestrator pod during a user-driven session create
+        # could still interrupt this inline refresh between Anthropic's
+        # 200 and the KV write — same kill-the-chain failure mode. The
+        # window is much smaller than the old loop (user-triggered, not
+        # 30-min cadence) and we have not yet observed a failure on this
+        # path. Mitigations considered and deferred:
+        #   1. terminationGracePeriodSeconds + preStop sleep (~5s) on
+        #      the orchestrator Deployment — cheap, ~95% effective.
+        #   2. Drain endpoint + in-flight counter — tracks active
+        #      refreshes, blocks SIGTERM until idle. Proper fix.
+        #   3. Decouple inline refresh into a one-shot Job created from
+        #      the rotator CronJob — full isolation, costs ~2-5s of
+        #      session-create latency.
+        # Revisit if/when an inline-create rotation is observed dying.
+        #
+        # Config-mode sessions skip this — they exist to seed credentials,
+        # not consume them, and refreshing against an invalid refresh
+        # token here would fail the user's recovery flow.
         async with self._lifecycle_lock:
-            # 0 → 1 transition for non-config sessions: rotate credentials
-            # synchronously so the new session boots against a freshly-
-            # refreshed access token. Config-mode sessions skip this — they
-            # exist to seed credentials, not consume them, and refreshing
-            # against an invalid refresh token here would fail the user's
-            # recovery flow.
-            should_kick_refresh = (
-                mode != CONFIG_MODE and not self._activity
-            )
+            should_kick_refresh = mode != CONFIG_MODE and not self._activity
             session_id = uuid.uuid4().hex[:10]
             if should_kick_refresh:
                 try:
@@ -317,54 +324,7 @@ class SessionManager:
             # for deletion.
             self._activity[session_id] = time.monotonic()
             self._ws_count[session_id] = 0
-            if mode != CONFIG_MODE:
-                self._ensure_credential_refresh_running()
         return SessionInfo(id=session_id, pod_name=None, owner=owner, status="Pending", mode=mode)
-
-    def _ensure_credential_refresh_running(self) -> None:
-        """Start the periodic credential-refresh task if not already running.
-
-        Idempotent — safe to call on every session create. Combined with
-        _maybe_stop_credential_refresh() on delete, this gives "rotation
-        runs only while sessions exist" behaviour: idle clusters do zero
-        rotations.
-        """
-        if self._credential_refresh_task is None or self._credential_refresh_task.done():
-            self._credential_refresh_task = asyncio.create_task(
-                self._credential_refresh_loop()
-            )
-
-    def _maybe_stop_credential_refresh(self) -> None:
-        """Cancel the periodic refresh task if no sessions remain.
-
-        Called from session delete paths after _activity has been pruned.
-        Doesn't await the cancellation — the task observes CancelledError
-        on its next sleep boundary, which is fine since rotation has no
-        side effects in flight.
-        """
-        if not self._activity and self._credential_refresh_task is not None:
-            if not self._credential_refresh_task.done():
-                self._credential_refresh_task.cancel()
-            self._credential_refresh_task = None
-
-    async def _credential_refresh_loop(self) -> None:
-        """Refresh credentials every CREDENTIAL_REFRESH_INTERVAL_SECONDS.
-
-        The first refresh on the 0 → 1 transition is done inline in
-        create() so the new session boots against fresh credentials; this
-        loop covers sessions that outlive the access-token TTL.
-        """
-        while True:
-            try:
-                await asyncio.sleep(CREDENTIAL_REFRESH_INTERVAL_SECONDS)
-            except asyncio.CancelledError:
-                log.info("credential refresh loop cancelled (no sessions)")
-                raise
-            try:
-                log.info("periodic credential refresh tick")
-                await refresh_now()
-            except Exception:
-                log.exception("periodic credential refresh failed; will retry next tick")
 
     async def list(self, owner: str) -> list[SessionInfo]:
         assert self._apps is not None
@@ -455,15 +415,13 @@ class SessionManager:
             raise
         if deployment.metadata.labels.get("tank-operator/owner") != owner_label:
             raise SessionNotOwned(session_id)
-        async with self._lifecycle_lock:
-            await self._apps.delete_namespaced_deployment(
-                name=name,
-                namespace=SESSIONS_NAMESPACE,
-                propagation_policy="Foreground",
-            )
-            self._ws_count.pop(session_id, None)
-            self._activity.pop(session_id, None)
-            self._maybe_stop_credential_refresh()
+        await self._apps.delete_namespaced_deployment(
+            name=name,
+            namespace=SESSIONS_NAMESPACE,
+            propagation_policy="Foreground",
+        )
+        self._ws_count.pop(session_id, None)
+        self._activity.pop(session_id, None)
 
     @contextlib.asynccontextmanager
     async def track_ws(self, session_id: str) -> AsyncIterator[None]:
@@ -527,14 +485,6 @@ class SessionManager:
                 continue
             self._ws_count.pop(session_id, None)
             self._activity.pop(session_id, None)
-        # If the sweep emptied _activity (or the orchestrator just started
-        # with no sessions), stop the periodic refresh task. Conversely,
-        # if it adopted existing sessions on cold start, ensure the task
-        # is running so they get periodic rotations as long as they live.
-        if self._activity:
-            self._ensure_credential_refresh_running()
-        else:
-            self._maybe_stop_credential_refresh()
 
 
 def _deployment_status(deployment: Any) -> str:

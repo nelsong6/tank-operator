@@ -43,26 +43,31 @@ ingress:
 oauthGateway:
   serviceHost: claude-oauth-gateway.tank-operator.svc.cluster.local
 
-# Anthropic credential rotation: runs in-process inside the orchestrator
-# pod, gated on session existence. On the 0 → 1 session transition we do
-# an immediate refresh and start a periodic timer; the timer cancels on
-# 1 → 0. Idle clusters do zero rotations — the refresh token sits in KV
-# untouched until the next user session. See backend/src/tank_operator/
-# {sessions.py,refresh_credentials.py}.
+# Anthropic credential rotation: a CronJob (templates/credential-refresher.yaml)
+# that calls Anthropic's token endpoint with the current refresh token and
+# writes the rotated blob back to KV. ESO mirrors KV → the orchestrator's
+# mounted Secret within ~1m, so the OAuth gateway picks up the new access
+# token automatically.
 #
-# The orchestrator authenticates to KV as the `claude-credentials-refresher`
-# UAMI (infra/credential_refresher.tf). The "refresher" name is a hangover
-# from the prior CronJob design; the UAMI itself is reused as-is. The
-# ExternalSecret below syncs AZURE_CLIENT_ID + AZURE_TENANT_ID from KV
-# so DefaultAzureCredential in the orchestrator can mint a federated token
-# bound to that UAMI.
+# Idle-skip lives in the entrypoint (tank_operator.cron_refresh): it lists
+# Deployments in the sessions namespace and exits 0 if none exist, so idle
+# clusters still do zero rotations.
+#
+# Inline rotation on the 0 → 1 session transition stays in sessions.py.create()
+# so a freshly-woken cluster boots the first session against an up-to-date
+# access token even if the most recent CronJob tick skipped.
+#
+# Authentication to KV uses the `claude-credentials-refresher` UAMI
+# (infra/credential_refresher.tf). The ExternalSecret below syncs
+# AZURE_CLIENT_ID + AZURE_TENANT_ID from KV so DefaultAzureCredential in
+# both the orchestrator (save-credentials) and the CronJob (periodic
+# rotation) can mint a federated token bound to that UAMI.
 credentialRefresher:
   configSecret: claude-credentials-refresher-config
-  # Periodic refresh cadence WHILE sessions exist. Anthropic access
-  # tokens are typically ~1h; 30m keeps a comfortable buffer. Read by
-  # sessions.py via the CREDENTIAL_REFRESH_INTERVAL_SECONDS env var
-  # (set in templates/deployment.yaml).
-  intervalSeconds: 1800
+  # Cron schedule for the rotation Job. Anthropic access tokens are ~1h;
+  # every 30m keeps a comfortable buffer while ensuring the access token
+  # in KV doesn't go stale during a long-running session.
+  schedule: "*/30 * * * *"
   keyVaultUrl: https://romaine-kv.vault.azure.net/
   # Published to KV by infra/credential_refresher.tf (Terraform).
   kvClientIdKey: claude-credentials-refresher-mi-client-id
