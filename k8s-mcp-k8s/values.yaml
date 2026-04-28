@@ -11,7 +11,7 @@ image:
   # SHA-pinned. mcp-k8s-build.yml rewrites this tag on every push to main
   # via a `[skip ci]` follow-up commit. Quoted so all-digit short-SHAs don't
   # become floats — see reference_yaml_tag_quoting.md.
-  tag: "REPLACE_ME"
+  tag: "9c76749"
   pullPolicy: IfNotPresent
 
 # Loopback-only port the Python uvicorn server listens on.
