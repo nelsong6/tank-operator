@@ -264,7 +264,9 @@ class SessionManager:
                     {"ip": self._api_proxy_ip, "hostnames": ["api.anthropic.com"]}
                 )
             pod_spec["hostAliases"] = host_aliases
-            container = pod_spec["containers"][0]
+            # Index by name, not position — the sidecar lives at [0] now,
+            # but only the claude container needs the OAuth gateway CA.
+            container = next(c for c in pod_spec["containers"] if c["name"] == "claude")
             container["env"].append(
                 {"name": "NODE_EXTRA_CA_CERTS", "value": "/etc/oauth-gateway-ca/ca.crt"}
             )
