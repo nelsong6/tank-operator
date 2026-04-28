@@ -204,3 +204,63 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         """Create a new branch pointing at from_sha."""
         r = gh.post(f"/repos/{owner}/{name}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": from_sha})
         return {"ref": r["ref"], "sha": r["object"]["sha"]}
+
+    @mcp.tool()
+    def list_workflow_runs(owner: str, name: str, workflow: str, branch: str | None = None, status: str | None = None, per_page: int = 10) -> list[dict[str, Any]]:
+        """List recent workflow runs. workflow is the file name ('tofu.yml') or numeric ID. status: queued|in_progress|completed|success|failure|... Useful for checking whether a CI job actually ran on a given commit."""
+        params: dict[str, Any] = {"per_page": per_page}
+        if branch:
+            params["branch"] = branch
+        if status:
+            params["status"] = status
+        body = gh.get(f"/repos/{owner}/{name}/actions/workflows/{workflow}/runs", params=params)
+        return [
+            {
+                "id": r["id"],
+                "head_sha": r["head_sha"],
+                "head_branch": r.get("head_branch"),
+                "event": r["event"],
+                "status": r["status"],
+                "conclusion": r["conclusion"],
+                "created_at": r["created_at"],
+                "html_url": r["html_url"],
+                "title": r.get("display_title"),
+            }
+            for r in body.get("workflow_runs", [])
+        ]
+
+    @mcp.tool()
+    def get_workflow_run(owner: str, name: str, run_id: int) -> dict[str, Any]:
+        """Return a single workflow run's status, conclusion, and metadata."""
+        r = gh.get(f"/repos/{owner}/{name}/actions/runs/{run_id}")
+        return {
+            "id": r["id"],
+            "head_sha": r["head_sha"],
+            "head_branch": r.get("head_branch"),
+            "event": r["event"],
+            "status": r["status"],
+            "conclusion": r["conclusion"],
+            "created_at": r["created_at"],
+            "updated_at": r.get("updated_at"),
+            "html_url": r["html_url"],
+            "title": r.get("display_title"),
+        }
+
+    @mcp.tool()
+    def list_repo_variables(owner: str, name: str) -> list[dict[str, Any]]:
+        """List repository-level GitHub Actions variables. Requires the App to
+        have 'variables: read' permission on its installation; without it this
+        returns 403."""
+        body = gh.get(f"/repos/{owner}/{name}/actions/variables", params={"per_page": 100})
+        return [
+            {"name": v["name"], "value": v["value"], "created_at": v.get("created_at"), "updated_at": v.get("updated_at")}
+            for v in body.get("variables", [])
+        ]
+
+    @mcp.tool()
+    def get_repo_variable(owner: str, name: str, variable_name: str) -> dict[str, Any]:
+        """Get a single repository Actions variable by name. Requires the App to
+        have 'variables: read' permission. Raises on 404 if the variable is
+        unset, which is a clean way to verify whether tofu wrote it."""
+        v = gh.get(f"/repos/{owner}/{name}/actions/variables/{variable_name}")
+        return {"name": v["name"], "value": v["value"], "created_at": v.get("created_at"), "updated_at": v.get("updated_at")}
