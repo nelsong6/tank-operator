@@ -61,9 +61,15 @@ RUN mkdir -p /workspace && cp /opt/claude-container/mcp.json /workspace/.mcp.jso
 COPY claude-container/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Bootstrap script the orchestrator exec's on every WS connect. Lives
+# in the image so the kubectl-exec request URL stays small — the
+# kube-apiserver rejects oversized exec command lines with HTTP 400.
+COPY claude-container/tank-bootstrap.sh /opt/tank/bootstrap.sh
+RUN chmod +x /opt/tank/bootstrap.sh
+
 # Hide tmux's status bar so the claude TUI gets the full terminal height.
 # tmux is the WS-reconnect-survival wrapper for the claude session
-# (see exec_proxy._BOOTSTRAP_SH); the status bar would steal one row.
+# (see tank-bootstrap.sh); the status bar would steal one row.
 RUN printf 'set -g status off\nset -g default-terminal "tmux-256color"\n' > /home/node/.tmux.conf \
     && chown node:node /home/node/.tmux.conf
 
