@@ -182,6 +182,18 @@ class SessionManager:
                         # via secret) because the value is per-pod,
                         # not a shared secret.
                         {"name": "TANK_SESSION_MODE", "value": mode},
+                        # Force claude (and anything else using the
+                        # `supports-hyperlinks` npm lib) to emit OSC 8
+                        # hyperlinks. The library's terminal-sniff list
+                        # doesn't recognise xterm.js, so without this
+                        # claude falls back to plain text URLs and we'd
+                        # have to detect wrapped URLs heuristically in
+                        # frontend/src/wrappedLinkProvider.ts. With OSC 8
+                        # the terminal gets explicit "this byte range is
+                        # one link" markers regardless of newlines or
+                        # auto-wrap, and xterm.js's built-in OSC 8
+                        # support renders them natively.
+                        {"name": "FORCE_HYPERLINK", "value": "1"},
                     ],
                     "envFrom": [
                         {"secretRef": {"name": GITHUB_APP_SECRET}},
