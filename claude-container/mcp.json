@@ -14,6 +14,13 @@
         "Authorization": "Bearer ${MCP_GITHUB_BEARER}"
       }
     },
+    "k8s": {
+      "type": "http",
+      "url": "http://mcp-k8s.mcp-k8s.svc:80/",
+      "headers": {
+        "Authorization": "Bearer ${MCP_K8S_BEARER}"
+      }
+    },
     "platform": {
       "command": "platform-mcp"
     }
