@@ -87,6 +87,12 @@ support cross-namespace cert distribution — the alternatives (reflector
 operator, kyverno, manual Secret copy) all add a controller. The Job runs
 once at chart install and on each upgrade; it reads ca.crt out of the live
 Secret and ensures the ConfigMap matches. Idempotent. Tolerates re-runs.
+
+The reflector operator (added in infra-bootstrap) is now deployed
+cluster-wide and the resulting ConfigMap carries reflector annotations
+so it auto-replicates into ambience-issue-* namespaces (used by the
+ambience agentic-CI flow). The CA private key still never leaves
+tank-operator; only the public ca.crt propagates.
 */}}
 apiVersion: v1
 kind: ServiceAccount
@@ -196,6 +202,16 @@ spec:
               metadata:
                 name: claude-oauth-ca
                 namespace: {{ .Values.namespaces.sessions }}
+                annotations:
+                  # Reflector publishes this ConfigMap into ambience-issue-*
+                  # namespaces so the per-issue agent Job (in ambience) can
+                  # mount ca.crt as NODE_EXTRA_CA_CERTS and trust the
+                  # in-cluster claude-api-proxy's TLS leaf. The CA private
+                  # key never leaves tank-operator.
+                  reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+                  reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: "ambience-issue-.*"
+                  reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+                  reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: "ambience-issue-.*"
               data:
                 ca.crt: |
               $(printf '%s\n' "$CA" | sed 's/^/    /')
