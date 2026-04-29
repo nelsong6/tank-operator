@@ -1,0 +1,12 @@
+# Shared namespace where the issue-agent workflow apply's per-issue Jobs.
+# Single namespace (instead of per-issue) keeps the runner SA's RBAC
+# namespace-scoped — no cluster-scope namespace create/delete needed.
+# Matches the `tank-operator-issue-.*` regex on the claude-oauth-ca
+# reflector annotation in the tank-operator chart, so ca.crt lands here
+# automatically for the agent Job to mount as NODE_EXTRA_CA_CERTS.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tank-operator-issue-agent-jobs
+  labels:
+    tank-operator.io/issue-agent-jobs: "true"

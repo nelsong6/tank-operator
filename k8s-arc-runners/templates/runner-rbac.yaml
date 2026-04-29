@@ -1,0 +1,78 @@
+# Custom ServiceAccount + RBAC for the issue-agent runner pods.
+#
+# Why not the chart's auto-generated `*-gha-rs-no-permission` SA? It's named
+# that because it's intended to stay perm-less. Granting it RBAC works but
+# semantically conflicts with the upstream chart's design and the wiring
+# would have to live alongside chart-managed resources in the same ns.
+# Cleanest: own SA, own RBAC, override serviceAccountName in values.yaml.
+#
+# This SA replaces the previous `azure/login + az aks get-credentials`
+# path — the runner now talks to the cluster as itself with these
+# explicitly-granted perms instead of borrowing the tank-operator CI
+# UAMI's cluster role through Azure ARM.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: issue-agent-runner
+  namespace: arc-runners-tank-operator-issue-agents
+---
+# Run agent Jobs in the shared tank-operator-issue-agent-jobs namespace.
+# Wide-ish (configmaps/secrets/jobs/pods CRUD + log read) but scoped to a
+# single namespace, not cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: issue-agent-runner
+  namespace: tank-operator-issue-agent-jobs
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets", "pods"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: issue-agent-runner
+  namespace: tank-operator-issue-agent-jobs
+subjects:
+  - kind: ServiceAccount
+    name: issue-agent-runner
+    namespace: arc-runners-tank-operator-issue-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: issue-agent-runner
+---
+# Read the claude-api-proxy Service's ClusterIP — the agent Job pins
+# api.anthropic.com to that IP via hostAliases so claude's outbound
+# auth is rewritten by the proxy. Single-resource scope.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: issue-agent-runner-read-claude-api-proxy
+  namespace: tank-operator
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["claude-api-proxy"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: issue-agent-runner-read-claude-api-proxy
+  namespace: tank-operator
+subjects:
+  - kind: ServiceAccount
+    name: issue-agent-runner
+    namespace: arc-runners-tank-operator-issue-agents
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: issue-agent-runner-read-claude-api-proxy

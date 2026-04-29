@@ -47,7 +47,7 @@ spec:
           emptyDir: {}
         - name: agent-config
           configMap:
-            name: agent-config
+            name: ${AGENT_CONFIGMAP}
       containers:
         - name: agent
           image: romainecr.azurecr.io/claude-container:${CLAUDE_CONTAINER_TAG}
@@ -70,7 +70,7 @@ spec:
             - name: GH_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: agent-github-token
+                  name: ${AGENT_GITHUB_SECRET}
                   key: token
             - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
               value: "1"
