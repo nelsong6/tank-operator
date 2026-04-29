@@ -23,6 +23,21 @@ class GitHubClient:
         r.raise_for_status()
         return r.json()
 
+    def get_text(self, path: str) -> str:
+        """Like get(), but returns the response body as text after following
+        redirects. Used for endpoints that hand out non-JSON, e.g.
+        /actions/jobs/{id}/logs which 302s to a presigned blob URL.
+        httpx strips Authorization on cross-origin redirects, so the App
+        token doesn't leak to the presigned host."""
+        r = httpx.get(
+            f"{GITHUB_API}{path}",
+            headers=self._headers(),
+            timeout=30.0,
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        return r.text
+
     def post(self, path: str, json: dict[str, Any] | None = None) -> Any:
         r = httpx.post(f"{GITHUB_API}{path}", headers=self._headers(), json=json, timeout=15.0)
         r.raise_for_status()
