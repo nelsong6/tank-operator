@@ -1,0 +1,59 @@
+name: Build agent-container image
+
+# Image used by the issue-runner agent flow (ambience, others). Distinct
+# from claude-container — that one serves tank-operator's interactive
+# sessions and stays slim. This image bundles playwright + chromium + Go
+# for in-pod evidence capture and dev-server runs.
+#
+# The chart in tank-operator/k8s/values.yaml does NOT consume this image
+# (sessions stay on claude-container); ambience and friends reference
+# `agent-container:latest` (or pin to a SHA) from their own workflows.
+# So no values.yaml bump here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent-container/**'
+      - '.github/workflows/agent-container-build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: agent-container-build
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name romainecr
+
+      - name: Compute tag
+        id: tag
+        run: echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (SHA + latest)
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          docker build -f agent-container/Dockerfile \
+            -t romainecr.azurecr.io/agent-container:$TAG \
+            -t romainecr.azurecr.io/agent-container:latest \
+            .
+          docker push romainecr.azurecr.io/agent-container:$TAG
+          docker push romainecr.azurecr.io/agent-container:latest
+          echo "### Pushed romainecr.azurecr.io/agent-container:$TAG (also :latest)" >> $GITHUB_STEP_SUMMARY
