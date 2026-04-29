@@ -1,11 +1,18 @@
 # Cluster-wide read for the server SA. kubectl/helm running inside the pod
 # authenticate as this SA; allowlists in mcp_k8s/tools.py prevent mutating
-# verbs at the tool layer. RBAC here is the second line of defense — even
-# if the allowlist were bypassed, the SA can't write anything.
+# verbs the SA isn't allowed at the tool layer. RBAC here is the second line
+# of defense — even if the allowlist were bypassed, the SA can only do what
+# the rules below permit.
 #
 # `view` ClusterRole excludes secrets, which would break helm list (helm
 # stores release state as a Secret). So a custom rule that mirrors `view`
 # semantics but covers everything via the wildcard.
+#
+# Two narrow write paths exist for unwedging stuck workloads:
+#   - delete on pods: paired with the delete_pod tool. Pods are managed
+#     by their parent controllers — deletion is reversible.
+#   - patch on apps/{deployments,statefulsets,daemonsets}: paired with
+#     the rollout_restart tool. Just touches the pod-template annotation.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -14,6 +21,12 @@ rules:
   - apiGroups: ["*"]
     resources: ["*"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
+    verbs: ["patch"]
   - nonResourceURLs: ["*"]
     verbs: ["get"]
 ---
