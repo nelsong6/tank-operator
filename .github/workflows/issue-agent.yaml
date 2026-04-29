@@ -90,6 +90,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install Azure CLI
+        # The bare upstream actions-runner image
+        # (ghcr.io/actions/actions-runner:latest) doesn't ship with az;
+        # azure/login@v2 expects it to be on PATH. Install via the
+        # MS-maintained Debian installer. Runner user has NOPASSWD sudo.
+        # Ambience bakes az + kubectl into a custom runner image instead;
+        # we can switch when this per-run install becomes annoying.
+        run: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
       - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
