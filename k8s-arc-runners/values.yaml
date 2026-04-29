@@ -34,9 +34,15 @@ gha-runner-scale-set:
 
   template:
     spec:
+      # Override the chart's auto-generated `*-gha-rs-no-permission` SA.
+      # Our SA (created in templates/runner-rbac.yaml) carries the K8s
+      # RBAC the workflow needs — the runner talks to the cluster as
+      # itself rather than borrowing the tank-operator CI UAMI's perms
+      # via az aks get-credentials.
+      serviceAccountName: issue-agent-runner
       containers:
         - name: runner
-          # Custom runner with az + kubectl baked in. Built by
+          # Custom runner with kubectl baked in. Built by
           # .github/workflows/issue-agent-runner-build.yml from runner/Dockerfile;
           # that workflow rewrites the tag below on every push to main via a
           # `[skip ci]` follow-up commit. Quoted so all-digit short SHAs aren't
