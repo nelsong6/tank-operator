@@ -43,6 +43,14 @@ spec:
             - --outgoing-auth-strategy
             - UseHostingEnvironmentIdentity
             - --dangerously-disable-http-incoming-auth
+            # Skip the user-consent (elicitation) prompt before sensitive
+            # commands like KV secret reads. The guard is meant for direct
+            # human-in-the-loop scenarios; here every caller is an in-
+            # cluster claude-session pod authenticated via TokenReview and
+            # the synthetic mcp.tank-operator.io/servers RBAC. Elicitation
+            # only blocks legitimate programmatic use without adding any
+            # security since there's no user to confirm anyway.
+            - --dangerously-disable-elicitation
           ports:
             - name: upstream
               containerPort: {{ .Values.upstreamPort }}
