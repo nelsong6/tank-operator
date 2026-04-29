@@ -39,6 +39,12 @@ The browser xterm.js terminal is *the* route, not a demo surface. SSH / VS Code 
 - `mcp-k8s` — read-only kubectl/helm
 - `mcp-argocd` — read-only ArgoCD via Dex SA-token exchange (no static API tokens)
 
+### mcp-github write surface: no caller-provided SHAs
+
+Every mutation in `mcp-servers/github/tools.py` resolves base refs and blob shas server-side at call time — `create_branch(base="main")`, `create_or_update_file(branch=…)`, `delete_file(branch=…)`, `commit_to_branch(branch=…, base="main", files=…)`. There is intentionally no `from_sha` / `sha` parameter on the public surface. The reason this matters: a prior Claude session reverted a merged PR by branching off a *cached* SHA — it had read `main`'s HEAD early in the session, merged a PR, then made a second PR from the cached pre-merge SHA. The narrow fix (caller still supplies SHA, but tool requires it) doesn't help, because the caller's cache is the bug. The actual fix is to never let the caller supply identifiers for "where am I branching from" or "what version of the file am I overwriting" — the server reads fresh on every call. `commit_to_branch` is the preferred path for any multi-file change because it lands one coherent commit instead of N consecutive `create_or_update_file` calls.
+
+Pair with: outgoing git mutation should never go through `git push`. Read-only `git clone` / `fetch` / `pull` for build/test, all writes via the MCP tools above. The image deliberately doesn't ship a credential helper for `https://github.com`.
+
 ### azure-mcp config keys
 
 The `mcr.microsoft.com/azure-sdk/azure-mcp` image binds inbound JWT validation and the OAuth metadata document from **ASP.NET Core hierarchical config keys**, not the `AZURE_AD_*` names some Microsoft Bicep templates use. Source: `microsoft/mcp` repo → `Microsoft.Mcp.Core/src/Areas/Server/Commands/ServiceStartCommand.cs`.
