@@ -36,7 +36,18 @@ RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
         | tar -C /usr/local -xz
 ENV PATH="/usr/local/go/bin:${PATH}"
 
-RUN npm install -g @anthropic-ai/claude-code
+# claude-code CLI + playwright npm package. The base image preinstalls
+# chromium under /ms-playwright but NOT the playwright JS package, so any
+# `import "playwright"` from a script (e.g. ambience's
+# scripts/agent/capture-screenshot.mjs) would fail without this. Browsers
+# are already on disk so we skip re-downloading.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm install -g @anthropic-ai/claude-code playwright
+
+# NODE_PATH lets bare `import "playwright"` resolve from the global
+# install above without per-script `npm link`. Standard global path on
+# Debian-derived images.
+ENV NODE_PATH=/usr/lib/node_modules
 
 # Rename the playwright base's pwuser (uid 1000) to `node` so the agent
 # Job's runAsUser:1000 securityContext finds a valid user named `node`,
