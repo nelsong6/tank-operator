@@ -386,6 +386,57 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         }
 
     @mcp.tool()
+    def list_workflow_run_jobs(owner: str, name: str, run_id: int) -> list[dict[str, Any]]:
+        """List the jobs (and per-step results) of a workflow run. Pair with
+        get_workflow_job_logs to look up a job_id then download its log text."""
+        body = gh.get(f"/repos/{owner}/{name}/actions/runs/{run_id}/jobs", params={"per_page": 50})
+        return [
+            {
+                "id": j["id"],
+                "name": j["name"],
+                "status": j["status"],
+                "conclusion": j.get("conclusion"),
+                "started_at": j.get("started_at"),
+                "completed_at": j.get("completed_at"),
+                "html_url": j.get("html_url"),
+                "steps": [
+                    {
+                        "number": s.get("number"),
+                        "name": s.get("name"),
+                        "status": s.get("status"),
+                        "conclusion": s.get("conclusion"),
+                        "started_at": s.get("started_at"),
+                        "completed_at": s.get("completed_at"),
+                    }
+                    for s in j.get("steps", [])
+                ],
+            }
+            for j in body.get("jobs", [])
+        ]
+
+    @mcp.tool()
+    def get_workflow_job_logs(owner: str, name: str, job_id: int, max_chars: int = 200_000) -> dict[str, Any]:
+        """Fetch the log text for a single workflow run job. The Actions logs
+        endpoint 302s to a presigned blob URL; get_text follows the redirect
+        and returns plain text. Truncated to the LAST `max_chars` characters
+        because failures surface near the end of the log; if you need earlier
+        output, raise max_chars or look at the GH UI for live streaming.
+
+        Use list_workflow_run_jobs to find a job_id."""
+        try:
+            text = gh.get_text(f"/repos/{owner}/{name}/actions/jobs/{job_id}/logs")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise RuntimeError(f"job {job_id} not found in {owner}/{name}")
+            if exc.response.status_code == 410:
+                raise RuntimeError(f"job {job_id} logs have expired and are no longer downloadable")
+            raise
+        truncated = len(text) > max_chars
+        if truncated:
+            text = text[-max_chars:]
+        return {"job_id": job_id, "chars": len(text), "truncated": truncated, "text": text}
+
+    @mcp.tool()
     def list_repo_variables(owner: str, name: str) -> list[dict[str, Any]]:
         """List repository-level GitHub Actions variables. Requires the App to
         have 'variables: read' permission on its installation; without it this
