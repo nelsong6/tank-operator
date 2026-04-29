@@ -1,0 +1,16 @@
+apiVersion: v2
+name: tank-operator-issue-agents
+version: 0.1.0
+description: |
+  AutoscalingRunnerSet for tank-operator's issue-agent flow. Scales from 0 to
+  5 ephemeral Linux runners on demand. Each runner is a single-shot pod that
+  receives one workflow_dispatch from glimmung, runs the issue-agent
+  workflow (which kubectl-applies an in-cluster Claude Job), then exits.
+
+  Wrapper chart pattern matching infra-bootstrap/k8s/arc-runners — declares
+  the upstream gha-runner-scale-set as a dependency, configures it in
+  values.yaml, and lets ArgoCD render + apply the result.
+dependencies:
+  - name: gha-runner-scale-set
+    version: 0.14.1
+    repository: oci://ghcr.io/actions/actions-runner-controller-charts
