@@ -437,6 +437,86 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         return {"job_id": job_id, "chars": len(text), "truncated": truncated, "text": text}
 
     @mcp.tool()
+    def list_workflow_run_artifacts(owner: str, name: str, run_id: int) -> list[dict[str, Any]]:
+        """List the artifacts produced by a workflow run. Pair with
+        get_workflow_run_artifact_files to download and inspect one."""
+        body = gh.get(f"/repos/{owner}/{name}/actions/runs/{run_id}/artifacts", params={"per_page": 100})
+        return [
+            {
+                "id": a["id"],
+                "name": a["name"],
+                "size_in_bytes": a["size_in_bytes"],
+                "created_at": a.get("created_at"),
+                "expires_at": a.get("expires_at"),
+                "expired": a.get("expired", False),
+            }
+            for a in body.get("artifacts", [])
+        ]
+
+    @mcp.tool()
+    def get_workflow_run_artifact_files(
+        owner: str,
+        name: str,
+        artifact_id: int,
+        path_glob: str = "*",
+        max_total_chars: int = 200_000,
+    ) -> dict[str, Any]:
+        """Download a workflow run artifact (a zip), extract it, and return
+        matching file contents. Files matching path_glob are decoded as UTF-8
+        when valid (encoding='text'), else returned as base64
+        (encoding='base64'). Files are returned in name-sorted order; once the
+        cumulative character budget exceeds max_total_chars, the rest are
+        dropped and `truncated_at` names the first omitted file. Use to read
+        log lines or jsonl event streams from a CI run without leaving chat.
+
+        Use list_workflow_run_artifacts to find an artifact_id."""
+        import base64
+        import fnmatch
+        import io
+        import zipfile
+        try:
+            zip_bytes = gh.get_bytes(f"/repos/{owner}/{name}/actions/artifacts/{artifact_id}/zip")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise RuntimeError(f"artifact {artifact_id} not found in {owner}/{name}")
+            if exc.response.status_code == 410:
+                raise RuntimeError(f"artifact {artifact_id} has expired and is no longer downloadable")
+            raise
+        files = []
+        used = 0
+        truncated_at: str | None = None
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for info in sorted(zf.infolist(), key=lambda i: i.filename):
+                if info.is_dir():
+                    continue
+                if not fnmatch.fnmatch(info.filename, path_glob):
+                    continue
+                data = zf.read(info.filename)
+                try:
+                    payload = data.decode("utf-8")
+                    encoding = "text"
+                except UnicodeDecodeError:
+                    payload = base64.b64encode(data).decode("ascii")
+                    encoding = "base64"
+                if used + len(payload) > max_total_chars and files:
+                    truncated_at = info.filename
+                    break
+                used += len(payload)
+                files.append({
+                    "path": info.filename,
+                    "bytes": info.file_size,
+                    "encoding": encoding,
+                    "content": payload,
+                })
+        return {
+            "artifact_id": artifact_id,
+            "zip_bytes": len(zip_bytes),
+            "file_count": len(files),
+            "truncated_at": truncated_at,
+            "files": files,
+        }
+
+    @mcp.tool()
     def list_repo_variables(owner: str, name: str) -> list[dict[str, Any]]:
         """List repository-level GitHub Actions variables. Requires the App to
         have 'variables: read' permission on its installation; without it this
