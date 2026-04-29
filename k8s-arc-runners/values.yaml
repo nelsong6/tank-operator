@@ -20,12 +20,17 @@ gha-runner-scale-set:
   runnerScaleSetName: "tank-operator-issue-agents"
 
   # Explicit controller SA — the chart otherwise does a live cluster lookup
-  # for the controller's SA, which fails on offline `helm template` rendering
-  # (and ArgoCD uses helm template under the hood). Same workaround
-  # infra-bootstrap/k8s/arc-runners/values.yaml uses.
+  # for the controller's SA, which fails on offline `helm template`
+  # rendering (and ArgoCD uses helm template under the hood). Name matches
+  # the actual SA the controller pod runs as: chart `gha-rs-controller`,
+  # release name `arc` → SA `arc-gha-rs-controller`. infra-bootstrap's
+  # k8s/arc-runners/values.yaml has this as `arc-controller-gha-rs-controller`,
+  # which was wrong — the right binding here lets the manager Role grant
+  # secret-read to the actual SA so AutoscalingRunnerSet reconciliation
+  # succeeds.
   controllerServiceAccount:
     namespace: arc-systems
-    name: arc-controller-gha-rs-controller
+    name: arc-gha-rs-controller
 
   template:
     spec:
