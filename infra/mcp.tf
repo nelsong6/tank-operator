@@ -46,5 +46,15 @@ module "mcp_azure" {
       scope                = "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
       role_definition_name = "Reader"
     }
+    # KV data-plane access. Reader at the control plane gives us the
+    # vault's metadata but NOT secret/cert reads — those need this
+    # data-plane role. Without it any caller-driven KV operation through
+    # azure-mcp comes back as auth failure (the SDK rolls 403 on
+    # getSecret into the same ChainedTokenCredential error path it uses
+    # for missing tokens).
+    "kv-secrets-user" = {
+      scope                = data.azurerm_key_vault.main.id
+      role_definition_name = "Key Vault Secrets User"
+    }
   }
 }
