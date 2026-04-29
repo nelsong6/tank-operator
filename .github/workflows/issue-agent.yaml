@@ -1,0 +1,215 @@
+name: Issue Agent
+
+run-name: "#${{ inputs.issue_number }} ${{ inputs.issue_title }} (${{ inputs.host }})"
+
+# Glimmung is the entry point. https://glimmung.romaine.life/v1/webhook/github
+# receives the GitHub `issues` event, atomically claims a host, and fires this
+# workflow_dispatch with lease_id + host + issue_number. The actual Claude run
+# happens in an in-cluster k8s Job that reaches api.anthropic.com via the
+# tank-operator/claude-api-proxy (which stamps subscription auth per request);
+# this workflow is the orchestration outer loop. Modeled on ambience's
+# agent-run.yml.
+#
+# No heartbeat: glimmung's TTL + workflow_run.completed release covers
+# liveness. The release-lease job below is the explicit happy-path release;
+# if the runner dies mid-run the webhook handler picks up the slack.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lease_id:
+        description: Glimmung lease ID (ULID)
+        required: true
+        type: string
+      host:
+        description: Glimmung host venue (e.g. tank-operator-issue-agents)
+        required: true
+        type: string
+      issue_number:
+        description: Issue number to address
+        required: true
+        type: string
+      issue_title:
+        description: Issue title (informational)
+        required: false
+        type: string
+      gh_event:
+        description: Originating GitHub event (informational)
+        required: false
+        type: string
+      gh_action:
+        description: Originating GitHub action (informational)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  issues: write
+  pull-requests: write
+
+env:
+  GLIMMUNG_BASE: https://glimmung.romaine.life
+  GLIMMUNG_PROJECT: tank-operator
+  CLAUDE_CONTAINER_TAG: latest
+
+jobs:
+  route:
+    name: Verify glimmung lease
+    runs-on: tank-operator-issue-agents
+    steps:
+      - name: Verify glimmung lease
+        env:
+          LEASE_ID: ${{ inputs.lease_id }}
+          HOST: ${{ inputs.host }}
+        run: |
+          set -euo pipefail
+          resp=$(curl -fsS "${GLIMMUNG_BASE}/v1/lease/${LEASE_ID}?project=${GLIMMUNG_PROJECT}")
+          state=$(printf '%s' "$resp" | jq -r .state)
+          host=$(printf '%s' "$resp" | jq -r .host)
+          if [[ "$state" != "active" ]]; then
+            echo "::error::lease ${LEASE_ID} state=${state} (expected active)"
+            exit 1
+          fi
+          if [[ "$host" != "$HOST" ]]; then
+            echo "::error::lease ${LEASE_ID} host=${host} (expected ${HOST})"
+            exit 1
+          fi
+          echo "lease verified: ${LEASE_ID} active on ${HOST}"
+
+  agent:
+    name: Run agent + open PR
+    needs: route
+    runs-on: tank-operator-issue-agents
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      ISSUE_TITLE: ${{ inputs.issue_title }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.ARM_CLIENT_ID }}
+          tenant-id: ${{ vars.ARM_TENANT_ID }}
+          subscription-id: ${{ vars.ARM_SUBSCRIPTION_ID }}
+
+      - name: Set AKS context
+        env:
+          AZURE_AKS_RESOURCE_GROUP: ${{ vars.AZURE_AKS_RESOURCE_GROUP }}
+          AZURE_AKS_CLUSTER_NAME: ${{ vars.AZURE_AKS_CLUSTER_NAME }}
+        run: |
+          set -euo pipefail
+          az aks get-credentials \
+            --resource-group "$AZURE_AKS_RESOURCE_GROUP" \
+            --name "$AZURE_AKS_CLUSTER_NAME" \
+            --overwrite-existing
+
+      - name: Compute run-scoped variables
+        run: |
+          set -euo pipefail
+          short_sha=$(git rev-parse --short=7 HEAD)
+          slug="issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${short_sha}"
+          namespace="tank-operator-${slug}"
+          job_name="agent-${slug}"
+          branch="agent/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}"
+          {
+            echo "NAMESPACE=${namespace}"
+            echo "JOB_NAME=${job_name}"
+            echo "BRANCH_NAME=${branch}"
+            echo "ISSUE_URL=https://github.com/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}"
+          } >> "$GITHUB_ENV"
+
+      - name: Create per-issue namespace
+        run: |
+          set -euo pipefail
+          # Reflector watches namespaces matching `tank-operator-issue-.*`
+          # and copies the claude-oauth-ca ConfigMap in (annotation source
+          # in tank-operator-sessions). Match that prefix exactly so the CA
+          # cert lands without manual reflection wiring.
+          kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml \
+            | kubectl apply -f -
+          kubectl label namespace "${NAMESPACE}" \
+            tank-operator.io/issue-agent=true --overwrite
+
+      - name: Resolve claude-api-proxy ClusterIP
+        run: |
+          set -euo pipefail
+          ip=$(kubectl -n tank-operator get svc claude-api-proxy -o jsonpath='{.spec.clusterIP}')
+          if [ -z "$ip" ]; then
+            echo "::error::claude-api-proxy Service not found in tank-operator namespace"
+            exit 1
+          fi
+          echo "PROXY_IP=${ip}" >> "$GITHUB_ENV"
+
+      - name: Provision agent ConfigMap + GitHub-token Secret
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          kubectl -n "${NAMESPACE}" create configmap agent-config \
+            --from-file=prompt.md=.github/agent/prompt.md \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "${NAMESPACE}" create secret generic agent-github-token \
+            --from-literal=token="${GITHUB_TOKEN}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply agent Job
+        run: |
+          set -euo pipefail
+          export ISSUE_NUMBER ISSUE_TITLE ISSUE_URL BRANCH_NAME NAMESPACE JOB_NAME PROXY_IP CLAUDE_CONTAINER_TAG
+          envsubst < .github/agent/job.yaml | kubectl apply -f -
+
+      - name: Stream + wait for Job
+        run: |
+          set -euo pipefail
+          pod=""
+          for _ in $(seq 1 30); do
+            pod=$(kubectl -n "${NAMESPACE}" get pods -l "job-name=${JOB_NAME}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            [ -n "$pod" ] && break
+            sleep 2
+          done
+          if [ -z "$pod" ]; then
+            echo "::error::Job pod never appeared"
+            exit 1
+          fi
+          kubectl -n "${NAMESPACE}" logs -f "$pod" || true
+          kubectl -n "${NAMESPACE}" wait --for=condition=complete --timeout=30m "job/${JOB_NAME}" && exit 0
+          kubectl -n "${NAMESPACE}" wait --for=condition=failed --timeout=10s "job/${JOB_NAME}" && {
+            echo "::error::agent Job failed"
+            exit 1
+          }
+
+      - name: Open pull request
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --base main \
+            --head "${BRANCH_NAME}" \
+            --title "agent: ${ISSUE_TITLE} (#${ISSUE_NUMBER})" \
+            --body "Closes #${ISSUE_NUMBER}.
+
+          Generated by glimmung-leased agent run on host \`${{ inputs.host }}\` (lease \`${{ inputs.lease_id }}\`)."
+
+      - name: Tear down per-issue namespace
+        if: always()
+        run: |
+          set -euo pipefail
+          kubectl delete namespace "${NAMESPACE}" --ignore-not-found=true --wait=false || true
+
+  release-lease:
+    name: Release glimmung lease
+    needs: [route, agent]
+    if: always()
+    runs-on: tank-operator-issue-agents
+    steps:
+      - name: Release lease
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "${GLIMMUNG_BASE}/v1/lease/${{ inputs.lease_id }}/release?project=${GLIMMUNG_PROJECT}" >/dev/null

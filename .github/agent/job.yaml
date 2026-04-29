@@ -1,0 +1,155 @@
+# Per-issue agent Job. Rendered by .github/workflows/issue-agent.yaml at
+# dispatch time with envsubst — the workflow exports NAMESPACE, JOB_NAME,
+# ISSUE_NUMBER, ISSUE_TITLE, ISSUE_URL, BRANCH_NAME, PROXY_IP, GH_TOKEN,
+# CLAUDE_CONTAINER_TAG.
+#
+# Network model:
+#   - hostAliases pins api.anthropic.com to the in-cluster
+#     claude-api-proxy ClusterIP so claude's outbound traffic is
+#     transparently rewritten + auth-injected. The proxy's TLS leaf has
+#     api.anthropic.com SAN, signed by claude-oauth-ca; ca.crt is mounted
+#     from a ConfigMap reflected into this namespace by emberstack/reflector
+#     (source in tank-operator-sessions, target match is
+#     tank-operator-issue-.*) and pointed at via NODE_EXTRA_CA_CERTS.
+#   - claude never holds the real subscription token. The placeholder
+#     credentials.json keeps it from refreshing; ext_proc on the proxy
+#     stamps the live Bearer per request.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: tank-operator-agent
+    tank-operator.io/issue: "${ISSUE_NUMBER}"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tank-operator-agent
+        tank-operator.io/issue: "${ISSUE_NUMBER}"
+    spec:
+      restartPolicy: Never
+      hostAliases:
+        - ip: ${PROXY_IP}
+          hostnames:
+            - api.anthropic.com
+      volumes:
+        - name: claude-ca
+          configMap:
+            name: claude-oauth-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: workspace
+          emptyDir: {}
+        - name: agent-config
+          configMap:
+            name: agent-config
+      containers:
+        - name: agent
+          image: romainecr.azurecr.io/claude-container:${CLAUDE_CONTAINER_TAG}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/claude-ca/ca.crt
+            - name: HOME
+              value: /workspace
+            - name: ISSUE_NUMBER
+              value: "${ISSUE_NUMBER}"
+            - name: ISSUE_TITLE
+              value: "${ISSUE_TITLE}"
+            - name: ISSUE_URL
+              value: "${ISSUE_URL}"
+            - name: BRANCH_NAME
+              value: "${BRANCH_NAME}"
+            - name: REPO_SLUG
+              value: nelsong6/tank-operator
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agent-github-token
+                  key: token
+            - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+              value: "1"
+          volumeMounts:
+            - name: claude-ca
+              mountPath: /etc/claude-ca
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
+            - name: agent-config
+              mountPath: /agent-config
+              readOnly: true
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              # Seed claude state — placeholder credentials so claude never
+              # tries to refresh, project trust + onboarding flags so it
+              # boots straight into the run.
+              mkdir -p $HOME/.claude
+              cat > $HOME/.claude/.credentials.json <<'EOF'
+              {
+                "claudeAiOauth": {
+                  "accessToken": "managed-by-tank-operator",
+                  "refreshToken": "managed-by-tank-operator",
+                  "expiresAt": 9999999999000,
+                  "scopes": ["user:inference", "user:profile"],
+                  "subscriptionType": "max",
+                  "rateLimitTier": "max"
+                }
+              }
+              EOF
+              chmod 600 $HOME/.claude/.credentials.json
+              cat > $HOME/.claude/settings.json <<'EOF'
+              {"theme":"dark","permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true}
+              EOF
+              cat > $HOME/.claude.json <<'EOF'
+              {
+                "hasCompletedOnboarding": true,
+                "officialMarketplaceAutoInstallAttempted": true,
+                "officialMarketplaceAutoInstalled": true,
+                "projects": {
+                  "/workspace/repo": {
+                    "allowedTools": [],
+                    "hasTrustDialogAccepted": true,
+                    "projectOnboardingSeenCount": 1
+                  }
+                }
+              }
+              EOF
+
+              git config --global user.name "tank-operator-agent[bot]"
+              git config --global user.email "tank-operator-agent@romaine.life"
+
+              git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO_SLUG}.git" /workspace/repo
+              cd /workspace/repo
+              git checkout -B "${BRANCH_NAME}"
+
+              cat > /tmp/issue-context.md <<EOF
+              # Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}
+              URL: ${ISSUE_URL}
+              EOF
+              cat /agent-config/prompt.md /tmp/issue-context.md > /tmp/agent-input.md
+
+              cat /tmp/agent-input.md | claude \
+                --print \
+                --dangerously-skip-permissions \
+                2>&1 | tee /tmp/claude-stream.log
+
+              git add -A
+              if git diff --cached --quiet; then
+                echo "agent produced no changes; failing job so the workflow doesn't open an empty PR" >&2
+                exit 1
+              fi
+              git commit -m "agent: address issue #${ISSUE_NUMBER}
+
+              ${ISSUE_TITLE}
+
+              Closes #${ISSUE_NUMBER}"
+              git push origin "HEAD:${BRANCH_NAME}"
