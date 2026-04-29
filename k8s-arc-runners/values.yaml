@@ -47,7 +47,7 @@ gha-runner-scale-set:
           # that workflow rewrites the tag below on every push to main via a
           # `[skip ci]` follow-up commit. Quoted so all-digit short SHAs aren't
           # reformatted as scientific notation by YAML.
-          image: romainecr.azurecr.io/tank-operator-issue-agent-runner:498ebf2
+          image: romainecr.azurecr.io/tank-operator-issue-agent-runner:24611c6
           command:
             - /home/runner/run.sh
           resources:
