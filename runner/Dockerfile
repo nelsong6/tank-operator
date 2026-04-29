@@ -17,6 +17,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        gettext-base \
         git \
         jq \
     && rm -rf /var/lib/apt/lists/*
