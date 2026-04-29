@@ -65,6 +65,16 @@ spec:
               value: /var/run/secrets/azure/tokens/azure-identity-token
             - name: AZURE_AUTHORITY_HOST
               value: https://login.microsoftonline.com/
+            # azure-mcp's --outgoing-auth-strategy UseHostingEnvironmentIdentity
+            # docs imply DefaultAzureCredential, but the HTTP transport actually
+            # walks the stdio/local chain (Environment → VS → VSCode → CLI →
+            # PS → AZD → InteractiveBrowser) and never reaches
+            # WorkloadIdentityCredential. Pinning this env var skips the chain
+            # and uses WI directly — matches what the SA + projected token +
+            # AZURE_CLIENT_ID are actually set up for.
+            # Source: https://github.com/microsoft/mcp/blob/main/docs/Authentication.md
+            - name: AZURE_TOKEN_CREDENTIALS
+              value: WorkloadIdentityCredential
           readinessProbe:
             # tcpSocket can't target loopback (probes run from the kubelet's
             # netns and hit the pod IP). exec runs inside the container so
