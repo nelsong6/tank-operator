@@ -36,10 +36,12 @@ gha-runner-scale-set:
     spec:
       containers:
         - name: runner
-          # Upstream actions-runner image. The workflow installs az + kubectl
-          # at runtime via azure/login@v2 + azure/setup-kubectl@v4, so we
-          # don't need a custom runner image for this flow.
-          image: ghcr.io/actions/actions-runner:latest
+          # Custom runner with az + kubectl baked in. Built by
+          # .github/workflows/issue-agent-runner-build.yml from runner/Dockerfile;
+          # that workflow rewrites the tag below on every push to main via a
+          # `[skip ci]` follow-up commit. Quoted so all-digit short SHAs aren't
+          # reformatted as scientific notation by YAML.
+          image: romainecr.azurecr.io/tank-operator-issue-agent-runner:bootstrap
           command:
             - /home/runner/run.sh
           resources:
