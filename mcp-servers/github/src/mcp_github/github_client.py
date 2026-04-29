@@ -38,6 +38,20 @@ class GitHubClient:
         r.raise_for_status()
         return r.text
 
+    def get_bytes(self, path: str) -> bytes:
+        """Like get_text(), but returns raw response bytes. For endpoints that
+        hand out binary blobs, e.g. /actions/artifacts/{id}/zip which 302s to
+        a presigned URL containing a zip archive. Same cross-origin
+        Authorization-stripping guarantee as get_text."""
+        r = httpx.get(
+            f"{GITHUB_API}{path}",
+            headers=self._headers(),
+            timeout=120.0,
+            follow_redirects=True,
+        )
+        r.raise_for_status()
+        return r.content
+
     def post(self, path: str, json: dict[str, Any] | None = None) -> Any:
         r = httpx.post(f"{GITHUB_API}{path}", headers=self._headers(), json=json, timeout=15.0)
         r.raise_for_status()
