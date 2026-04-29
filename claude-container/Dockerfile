@@ -9,7 +9,12 @@ FROM node:20-alpine
 ARG TARGETARCH=amd64
 ARG KUBECTL_VERSION=v1.31.0
 ARG TOFU_VERSION=1.9.0
+ARG HELM_VERSION=v3.16.3
+ARG YQ_VERSION=v4.44.3
+ARG UV_VERSION=0.5.18
 
+# ripgrep + make round out the bash surface (rg replaces grep for repo
+# search; make is needed for several of the consumed repos' dev flows).
 RUN apk add --no-cache \
         bash \
         ca-certificates \
@@ -19,8 +24,10 @@ RUN apk add --no-cache \
         gnupg \
         jq \
         less \
+        make \
         py3-pip \
         python3 \
+        ripgrep \
         tmux \
         unzip \
         vim
@@ -34,6 +41,30 @@ RUN curl -fsSL "https://github.com/opentofu/opentofu/releases/download/v${TOFU_V
     && unzip -q /tmp/tofu.zip tofu -d /usr/local/bin \
     && chmod +x /usr/local/bin/tofu \
     && rm /tmp/tofu.zip
+
+# helm — every consumed repo ships a chart; without it `helm template` /
+# `helm get manifest` debugging is missing.
+RUN curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
+        | tar -xz -C /tmp \
+    && mv "/tmp/linux-${TARGETARCH}/helm" /usr/local/bin/helm \
+    && rm -rf "/tmp/linux-${TARGETARCH}" \
+    && chmod +x /usr/local/bin/helm
+
+# yq — pairs with jq for the YAML half of k8s/helm work.
+RUN curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH}" \
+        -o /usr/local/bin/yq \
+    && chmod +x /usr/local/bin/yq
+
+# uv — fast pip replacement for the python projects (glimmung,
+# mcp-servers, platform-mcp). Hardcoded musl x86_64 path because
+# astral-sh/uv release artifacts aren't named with docker's TARGETARCH
+# convention; the image is alpine + amd64 today.
+RUN curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-musl.tar.gz" \
+        | tar -xz -C /tmp \
+    && mv /tmp/uv-x86_64-unknown-linux-musl/uv /usr/local/bin/uv \
+    && mv /tmp/uv-x86_64-unknown-linux-musl/uvx /usr/local/bin/uvx \
+    && rm -rf /tmp/uv-x86_64-unknown-linux-musl \
+    && chmod +x /usr/local/bin/uv /usr/local/bin/uvx
 
 RUN npm install -g @anthropic-ai/claude-code
 
