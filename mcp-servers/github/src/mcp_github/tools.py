@@ -1,8 +1,13 @@
 from typing import Any
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .github_client import GitHubClient
+
+
+def _is_404(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404
 
 
 def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
@@ -171,9 +176,24 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         }
 
     @mcp.tool()
-    def create_or_update_file(owner: str, name: str, path: str, content: str, message: str, branch: str | None = None, sha: str | None = None) -> dict[str, Any]:
-        """Create a file (omit sha) or update one (pass the existing blob sha from get_file_contents). Commits directly to branch (default branch if omitted). content is plain text; encoded to base64 for the API."""
+    def create_or_update_file(owner: str, name: str, path: str, content: str, message: str, branch: str | None = None) -> dict[str, Any]:
+        """Create a file or update one. Commits directly to `branch` (default branch
+        if omitted). content is plain text; encoded to base64 for the API.
+
+        The current blob sha is resolved server-side immediately before the write,
+        so a caller-cached sha can't be reused stale. The mutation is rejected by
+        GitHub with 409 if the file changed concurrently between the resolve and
+        the write."""
         import base64
+        params = {"ref": branch} if branch else None
+        sha: str | None = None
+        try:
+            existing = gh.get(f"/repos/{owner}/{name}/contents/{path}", params=params)
+            if isinstance(existing, dict) and "sha" in existing:
+                sha = existing["sha"]
+        except httpx.HTTPStatusError as exc:
+            if not _is_404(exc):
+                raise
         payload: dict[str, Any] = {
             "message": message,
             "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
@@ -191,19 +211,138 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         }
 
     @mcp.tool()
-    def delete_file(owner: str, name: str, path: str, message: str, sha: str, branch: str | None = None) -> dict[str, Any]:
-        """Delete a file. sha is the existing blob sha (from get_file_contents)."""
-        payload: dict[str, Any] = {"message": message, "sha": sha}
+    def delete_file(owner: str, name: str, path: str, message: str, branch: str | None = None) -> dict[str, Any]:
+        """Delete a file. The current blob sha is resolved server-side immediately
+        before the delete; the call fails if the file does not exist on `branch`
+        (default branch if omitted)."""
+        params = {"ref": branch} if branch else None
+        existing = gh.get(f"/repos/{owner}/{name}/contents/{path}", params=params)
+        if not isinstance(existing, dict) or "sha" not in existing:
+            raise RuntimeError(f"{path} is not a file or does not exist on {branch or 'default branch'}")
+        payload: dict[str, Any] = {"message": message, "sha": existing["sha"]}
         if branch is not None:
             payload["branch"] = branch
         r = gh.delete(f"/repos/{owner}/{name}/contents/{path}", json=payload)
         return {"commit_sha": r["commit"]["sha"]}
 
     @mcp.tool()
-    def create_branch(owner: str, name: str, branch: str, from_sha: str) -> dict[str, Any]:
-        """Create a new branch pointing at from_sha."""
-        r = gh.post(f"/repos/{owner}/{name}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": from_sha})
-        return {"ref": r["ref"], "sha": r["object"]["sha"]}
+    def create_branch(owner: str, name: str, branch: str, base: str = "main") -> dict[str, Any]:
+        """Create a new branch pointing at the current HEAD of `base` (default 'main').
+        The base sha is resolved server-side at call time — there is intentionally
+        no `from_sha` parameter, because a caller-cached sha is exactly the
+        affordance that lets a subsequent commit revert previous work by being
+        based on a stale view of `base`."""
+        base_branch = gh.get(f"/repos/{owner}/{name}/branches/{base}")
+        base_sha = base_branch["commit"]["sha"]
+        r = gh.post(f"/repos/{owner}/{name}/git/refs", json={"ref": f"refs/heads/{branch}", "sha": base_sha})
+        return {"ref": r["ref"], "sha": r["object"]["sha"], "base": base, "base_sha": base_sha}
+
+    @mcp.tool()
+    def commit_to_branch(
+        owner: str,
+        name: str,
+        branch: str,
+        files: list[dict[str, Any]],
+        message: str,
+        base: str = "main",
+        deletes: list[str] | None = None,
+        author_name: str | None = None,
+        author_email: str | None = None,
+    ) -> dict[str, Any]:
+        """Land a single commit covering one or more file changes (and optional
+        deletes) on `branch`. If `branch` doesn't exist on the remote, it is
+        created from the current HEAD of `base` (default 'main') and the commit
+        is the new branch's first commit. If `branch` exists, the commit is
+        appended to its current HEAD; `base` is ignored.
+
+        Both branch HEAD and base HEAD are resolved server-side at call time, so
+        no caller-cached sha can introduce staleness. This is the preferred path
+        for any multi-file change — using it instead of multiple
+        create_or_update_file calls keeps the change atomic and gives the PR a
+        single coherent commit.
+
+        files: [{"path": "src/foo.py", "content": "<plain text>", "mode"?: "100644"}].
+            Mode defaults to 100644; use "100755" for executables. Binary files
+            are not supported (content is utf-8 encoded before base64).
+        deletes: ["old/file.txt", ...] — paths to remove in the same commit.
+        author_name / author_email: override commit author. If omitted, attributes
+            to the App's bot identity (same as every other write tool).
+
+        Returns: {branch, commit_sha, tree_sha, parent_sha, ref, html_url}."""
+        import base64
+        if not files and not deletes:
+            raise ValueError("commit_to_branch needs at least one file or one delete")
+
+        branch_existed = True
+        try:
+            b = gh.get(f"/repos/{owner}/{name}/branches/{branch}")
+            parent_sha = b["commit"]["sha"]
+        except httpx.HTTPStatusError as exc:
+            if not _is_404(exc):
+                raise
+            branch_existed = False
+            b = gh.get(f"/repos/{owner}/{name}/branches/{base}")
+            parent_sha = b["commit"]["sha"]
+
+        parent_commit = gh.get(f"/repos/{owner}/{name}/git/commits/{parent_sha}")
+        base_tree_sha = parent_commit["tree"]["sha"]
+
+        tree_entries: list[dict[str, Any]] = []
+        for f in files or []:
+            if "path" not in f or "content" not in f:
+                raise ValueError("each file entry needs 'path' and 'content'")
+            blob = gh.post(
+                f"/repos/{owner}/{name}/git/blobs",
+                json={
+                    "content": base64.b64encode(f["content"].encode("utf-8")).decode("ascii"),
+                    "encoding": "base64",
+                },
+            )
+            tree_entries.append({
+                "path": f["path"],
+                "mode": f.get("mode", "100644"),
+                "type": "blob",
+                "sha": blob["sha"],
+            })
+        for path in deletes or []:
+            # sha=None on a tree entry deletes the path from the new tree.
+            tree_entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+
+        new_tree = gh.post(
+            f"/repos/{owner}/{name}/git/trees",
+            json={"base_tree": base_tree_sha, "tree": tree_entries},
+        )
+
+        commit_payload: dict[str, Any] = {
+            "message": message,
+            "tree": new_tree["sha"],
+            "parents": [parent_sha],
+        }
+        if author_name and author_email:
+            author_block = {"name": author_name, "email": author_email}
+            commit_payload["author"] = author_block
+            commit_payload["committer"] = author_block
+        new_commit = gh.post(f"/repos/{owner}/{name}/git/commits", json=commit_payload)
+
+        if branch_existed:
+            ref = gh.patch(
+                f"/repos/{owner}/{name}/git/refs/heads/{branch}",
+                json={"sha": new_commit["sha"]},
+            )
+        else:
+            ref = gh.post(
+                f"/repos/{owner}/{name}/git/refs",
+                json={"ref": f"refs/heads/{branch}", "sha": new_commit["sha"]},
+            )
+
+        return {
+            "branch": branch,
+            "commit_sha": new_commit["sha"],
+            "tree_sha": new_tree["sha"],
+            "parent_sha": parent_sha,
+            "ref": ref["ref"],
+            "html_url": new_commit.get("html_url", ""),
+        }
 
     @mcp.tool()
     def list_workflow_runs(owner: str, name: str, workflow: str, branch: str | None = None, status: str | None = None, per_page: int = 10) -> list[dict[str, Any]]:
