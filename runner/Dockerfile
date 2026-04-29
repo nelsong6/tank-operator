@@ -28,7 +28,21 @@ RUN echo "runner ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/runner \
     && chmod 0440 /etc/sudoers.d/runner
 
 # Azure CLI — needed by `azure/login@v2` and `az aks get-credentials`.
-RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+# Pinned to 2.71.0 (April 2025) because the bleeding-edge stream defaults
+# to api-version `2026-01-01` for AKS operations, which the cluster's
+# resource provider doesn't yet recognise (max supported is `2025-04-01`).
+# Downgrade once Azure rolls forward the AKS api-version cluster-side.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends lsb-release \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -sLS https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
+    && AZ_REPO=$(lsb_release -cs) \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ ${AZ_REPO} main" \
+        > /etc/apt/sources.list.d/azure-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "azure-cli=2.71.0-1~${AZ_REPO}" \
+    && rm -rf /var/lib/apt/lists/*
 
 # kubectl — needed by every step that talks to AKS. Pinned to match the
 # cluster's minor version (the cluster runs 1.31 per claude-container's
