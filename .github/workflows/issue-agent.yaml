@@ -141,8 +141,17 @@ jobs:
       - name: Apply agent Job
         run: |
           set -euo pipefail
-          export ISSUE_NUMBER ISSUE_TITLE ISSUE_URL BRANCH_NAME NAMESPACE JOB_NAME PROXY_IP CLAUDE_CONTAINER_TAG AGENT_CONFIGMAP AGENT_GITHUB_SECRET
-          envsubst < .github/agent/job.yaml | kubectl apply -f -
+          # envsubst with no args replaces *every* ${VAR} reference, including
+          # ones meant for the in-container bash (${GH_TOKEN}, ${REPO_SLUG},
+          # ${BRANCH_NAME} etc.) — if those aren't in the runner's env at this
+          # step they get silently substituted with empty strings, producing
+          # a manifest like `git clone "https://x-access-token:@github.com/.git"`.
+          # Pass an explicit allowlist so envsubst only touches the
+          # workflow-side template vars; everything else stays as a literal
+          # ${...} for bash to expand at container runtime.
+          envsubst '$NAMESPACE $JOB_NAME $ISSUE_NUMBER $ISSUE_TITLE $ISSUE_URL $BRANCH_NAME $PROXY_IP $CLAUDE_CONTAINER_TAG $AGENT_CONFIGMAP $AGENT_GITHUB_SECRET' \
+            < .github/agent/job.yaml \
+            | kubectl apply -f -
 
       - name: Stream + wait for Job
         run: |
@@ -158,11 +167,22 @@ jobs:
             exit 1
           fi
           kubectl -n "${NAMESPACE}" logs -f "$pod" || true
-          kubectl -n "${NAMESPACE}" wait --for=condition=complete --timeout=30m "job/${JOB_NAME}" && exit 0
-          kubectl -n "${NAMESPACE}" wait --for=condition=failed --timeout=10s "job/${JOB_NAME}" && {
-            echo "::error::agent Job failed"
-            exit 1
-          }
+          # Poll for either terminal condition. `kubectl wait --for=` watches
+          # only one condition; running them sequentially makes a Failed Job
+          # block on the Complete wait until its 30m timeout. Manual poll
+          # exits as soon as either condition flips True.
+          deadline=$(( $(date +%s) + 1800 ))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            cond=$(kubectl -n "${NAMESPACE}" get "job/${JOB_NAME}" \
+              -o jsonpath='{.status.conditions[?(@.status=="True")].type}' || true)
+            case "$cond" in
+              *Complete*) echo "Job complete"; exit 0 ;;
+              *Failed*)   echo "::error::agent Job failed"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::Job did not reach a terminal condition within 30m"
+          exit 1
 
       - name: Open pull request
         if: success()
