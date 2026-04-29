@@ -1,9 +1,20 @@
-"""Read-only kubectl + helm tools.
+"""kubectl + helm tools.
 
-Defense in depth: every command is hard-coded with a get-shaped verb (get,
-describe, logs, top, helm get/list/status/history). RBAC on the pod's SA is
-already get/list/watch only — these wrappers keep the tool surface aligned
-so the agent can't accidentally request a write.
+Defense in depth: every command is a hard-coded subcommand (get, describe,
+logs, top, helm get/list/status/history). The pod's SA gets read-mostly
+RBAC — these wrappers keep the tool surface aligned so the agent can't
+accidentally request something the SA isn't permitted to do.
+
+Two intentional write verbs:
+  - delete_pod — useful when a controller is wedged but its parent
+    StatefulSet/Deployment is fine. Pod deletion is recoverable: the
+    parent recreates it.
+  - rollout_restart — patches a workload's pod-template annotation to
+    trigger a rolling restart. Same semantics as
+    `kubectl rollout restart`.
+
+Both are paired with explicit RBAC additions in
+infra-bootstrap/k8s-mcp-k8s/templates/cluster-reader.yaml.
 """
 
 from __future__ import annotations
@@ -218,6 +229,30 @@ def register_tools(mcp: FastMCP) -> None:
             ["helm", "history", release, "-n", namespace, "-o", "json"],
             parse_json=True,
         )
+
+    @mcp.tool()
+    def delete_pod(name: str, namespace: str, grace_period_seconds: int | None = None) -> str:
+        """Delete a Pod. Useful when a controller pod is wedged but its parent
+        StatefulSet/Deployment/DaemonSet is healthy — the parent will recreate
+        the pod. grace_period_seconds=0 forces immediate delete (skips
+        terminationGracePeriod)."""
+        cmd = ["kubectl", "delete", "pod", name, "-n", namespace]
+        if grace_period_seconds is not None:
+            cmd += [f"--grace-period={int(grace_period_seconds)}"]
+        return _run(cmd)
+
+    @mcp.tool()
+    def rollout_restart(kind: str, name: str, namespace: str) -> str:
+        """Trigger a rolling restart of a Deployment, StatefulSet, or DaemonSet.
+        Equivalent to `kubectl rollout restart`: patches the pod template's
+        `kubectl.kubernetes.io/restartedAt` annotation so the controller
+        schedules new pods. kind must be one of: deployment, statefulset,
+        daemonset."""
+        allowed = {"deployment", "statefulset", "daemonset"}
+        canonical = kind.lower().rstrip("s")
+        if canonical not in allowed:
+            raise ValueError(f"kind must be one of {sorted(allowed)}, got {kind!r}")
+        return _run(["kubectl", "rollout", "restart", canonical, name, "-n", namespace])
 
     @mcp.tool()
     def api_resources() -> list[dict[str, Any]]:
