@@ -4,15 +4,30 @@ The Envoy listener in front of api.anthropic.com calls this service via the
 ``ExternalProcessor.Process`` bidirectional stream once per HTTP transaction.
 We act on two messages per stream:
 
-  - ``request_headers``: strip whatever Authorization the session pod sent
-    (always the placeholder ``managed-by-tank-operator`` from the bootstrap),
-    inject the current real access token from cache.
-  - ``response_headers``: peek ``:status``. On 401 kick off a refresh in the
-    background, but only if one isn't already in flight (single-flight guard
-    to prevent thundering-herd rotation storms when many concurrent requests
-    all see 401). Envoy's per-route retry policy resends the request; the
-    retry's request_headers callback awaits the in-flight refresh task before
+  - ``request_headers``: if the inbound ``authorization`` header is the
+    bootstrap placeholder ``Bearer managed-by-tank-operator``, swap it for
+    the current real OAuth access token from cache. If it's anything else
+    (typically a worker_jwt for the v2 remote-control bridge — see below),
+    pass the request through untouched.
+  - ``response_headers``: peek ``:status``. On 401 *for a request we
+    actually injected into*, kick off a background refresh — but only if
+    one isn't already in flight (single-flight guard prevents thundering-
+    herd rotation storms when many concurrent requests all see 401).
+    Envoy's per-route retry policy resends the request; the retry's
+    request_headers callback awaits the in-flight refresh task before
     injecting, so the retry always sees a fresh token.
+
+Why two distinct credentials in claude-code:
+  * OAuth access token: long-lived (8h), pod-resident only as a placeholder,
+    real value lives in this proxy's cache. Used for /v1/messages,
+    /v1/code/sessions, /v1/code/sessions/{id}/bridge, /archive, /events,
+    /api/oauth/*, /api/claude_code/*, etc.
+  * worker_jwt: short-lived, returned by the /bridge POST response, kept
+    only in claude-code memory. Used for the v2 remote-control bridge
+    endpoints: GET /v1/code/sessions/{id}/worker, PUT same, GET
+    /v1/code/sessions/{id}/worker/events/stream. These endpoints reject
+    the OAuth Bearer outright with 401, so it's load-bearing that the
+    proxy NOT clobber the Authorization on these calls.
 
 State:
   - ``_cached_access`` / ``_cached_refresh``: in-memory copy of the latest
@@ -75,6 +90,13 @@ log = logging.getLogger(__name__)
 # fronts api.anthropic.com, not platform.claude.com.
 ANTHROPIC_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 ANTHROPIC_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+
+# The placeholder claude-container/tank-bootstrap.sh writes into
+# ~/.claude/.credentials.json's accessToken (and matching refreshToken).
+# Used as the discriminator for "this is a request that wants OAuth-
+# Bearer injection" — anything else (worker_jwt, missing, future
+# unknowns) passes through with its Authorization untouched.
+PLACEHOLDER_BEARER = "Bearer managed-by-tank-operator"
 
 CREDENTIALS_FILE = os.environ.get(
     "CLAUDE_CREDENTIALS_FILE", "/etc/claude-credentials/credentials.json"
@@ -147,12 +169,19 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
         request_iterator: AsyncIterator[ext_proc_pb2.ProcessingRequest],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[ext_proc_pb2.ProcessingResponse]:
+        # Per-stream state: did we inject our OAuth Bearer on the request
+        # side of this transaction? If not (e.g. the call carried a
+        # worker_jwt), we must not interpret a 401 here as "our cached
+        # token went stale" — it's about the inbound credential we
+        # didn't touch, not ours.
+        injected = False
         async for req in request_iterator:
             kind = req.WhichOneof("request")
             if kind == "request_headers":
-                yield await self._on_request_headers()
+                response, injected = await self._on_request_headers(req.request_headers)
+                yield response
             elif kind == "response_headers":
-                yield await self._on_response_headers(req.response_headers)
+                yield await self._on_response_headers(req.response_headers, injected)
             else:
                 # Body / trailers / unknown: pass through unmodified. We
                 # configured the filter to skip body streaming, so the only
@@ -160,7 +189,23 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
                 # at end-of-stream.
                 yield ext_proc_pb2.ProcessingResponse()
 
-    async def _on_request_headers(self) -> ext_proc_pb2.ProcessingResponse:
+    async def _on_request_headers(
+        self, msg: ext_proc_pb2.HttpHeaders
+    ) -> tuple[ext_proc_pb2.ProcessingResponse, bool]:
+        inbound = _peek_header(msg, "authorization")
+        # Pass-through path: the caller is using a credential we didn't
+        # mint and shouldn't touch. claude-code's v2 remote-control bridge
+        # uses worker_jwt (sk-ant-si-…) on /v1/code/sessions/{id}/worker*
+        # endpoints, returned to it from the prior /bridge POST response.
+        # If we overwrite that Authorization with our OAuth Bearer the
+        # /worker endpoint 401s — Anthropic rejects the OAuth token there.
+        if inbound != PLACEHOLDER_BEARER:
+            return (
+                ext_proc_pb2.ProcessingResponse(
+                    request_headers=ext_proc_pb2.HeadersResponse()
+                ),
+                False,
+            )
         token = await self._get_access_token()
         mutation = base_pb2.HeaderValueOption(
             header=base_pb2.HeaderValue(key="authorization", raw_value=f"Bearer {token}".encode()),
@@ -176,19 +221,27 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
                 ),
             ),
         )
-        return ext_proc_pb2.ProcessingResponse(request_headers=headers_resp)
+        return ext_proc_pb2.ProcessingResponse(request_headers=headers_resp), True
 
     async def _on_response_headers(
-        self, msg: ext_proc_pb2.HttpHeaders
+        self, msg: ext_proc_pb2.HttpHeaders, was_injected: bool
     ) -> ext_proc_pb2.ProcessingResponse:
-        status = _peek_status(msg)
-        if status == 401:
-            self._access_invalidated = True
-            # Single-flight: only schedule a refresh if one isn't already
-            # running. Subsequent 401s in the same burst piggy-back on the
-            # in-flight task via _get_access_token.await(self._refresh_task).
-            if self._refresh_task is None or self._refresh_task.done():
-                self._refresh_task = asyncio.create_task(self._refresh())
+        # Only treat 401 as a refresh trigger for requests we actually
+        # injected. A 401 on a request that came in with a worker_jwt
+        # we passed through is about that JWT (expired/revoked/etc.),
+        # not about our cached OAuth token; rotating in response would
+        # spuriously churn tokens and could trigger the storm pattern
+        # if /worker endpoints loop on 401.
+        if was_injected:
+            status = _peek_status(msg)
+            if status == 401:
+                self._access_invalidated = True
+                # Single-flight: only schedule a refresh if one isn't
+                # already running. Subsequent 401s in the same burst
+                # piggy-back on the in-flight task via
+                # _get_access_token.await(self._refresh_task).
+                if self._refresh_task is None or self._refresh_task.done():
+                    self._refresh_task = asyncio.create_task(self._refresh())
         return ext_proc_pb2.ProcessingResponse(response_headers=ext_proc_pb2.HeadersResponse())
 
     async def _get_access_token(self) -> str:
@@ -333,6 +386,15 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
                 await cred.close()
         except Exception:
             log.exception("KV write failed; tokens stay in memory only")
+
+
+def _peek_header(msg: ext_proc_pb2.HttpHeaders, name: str) -> str | None:
+    name_lower = name.lower()
+    for h in msg.headers.headers:
+        if h.key.lower() == name_lower:
+            value = h.raw_value.decode() if h.raw_value else h.value
+            return value
+    return None
 
 
 def _peek_status(msg: ext_proc_pb2.HttpHeaders) -> int | None:
