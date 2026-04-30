@@ -1,14 +1,44 @@
 # BuildKit picks this up when -f claude-container/Dockerfile is used.
-# Keep the build context minimal — only paths the Dockerfile COPYs from.
-*
-!claude-container/Dockerfile
-!claude-container/mcp.json
-!claude-container/entrypoint.sh
-!claude-container/tank-bootstrap.sh
-!claude-container/fetch-skills.py
-!claude-container/platform-mcp
-claude-container/platform-mcp/**/__pycache__
-claude-container/platform-mcp/**/*.egg-info
-!claude-container/mcp-auth-proxy
-claude-container/mcp-auth-proxy/**/__pycache__
-claude-container/mcp-auth-proxy/**/*.egg-info
+#
+# Denylist-shaped: exclude things claude-container/Dockerfile does not
+# COPY from (other build contexts in the repo, standard cruft). New
+# files added under claude-container/ work without dockerignore edits;
+# the failure mode of forgetting to exclude something is a slightly
+# larger context, not a missing-file build break.
+
+# Standard cruft
+.git
+.github
+**/__pycache__
+**/*.egg-info
+**/node_modules
+**/.venv
+**/.pytest_cache
+**/dist
+**/.vite
+*.log
+
+# Other Dockerfile contexts in this repo — not used by claude-container's
+# build, so don't bloat the context.
+agent-container
+api-proxy
+backend
+frontend
+infra
+k8s
+k8s-arc-runners
+k8s-mcp-argocd
+k8s-mcp-azure
+k8s-mcp-github
+k8s-mcp-k8s
+k8s-sessions
+mcp-servers
+runner
+scripts
+
+# Top-level non-source
+.dockerignore
+.gitattributes
+.gitignore
+CLAUDE.md
+README.md
