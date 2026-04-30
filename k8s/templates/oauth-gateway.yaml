@@ -204,15 +204,15 @@ spec:
                 namespace: {{ .Values.namespaces.sessions }}
                 annotations:
                   # Reflector publishes this ConfigMap into per-issue
-                  # agent namespaces (ambience-issue-* and
-                  # tank-operator-issue-*) so each per-issue agent Job
+                  # agent namespaces (ambience-issue-*, tank-operator-issue-*,
+                  # glimmung-issue-*) so each per-issue agent Job
                   # can mount ca.crt as NODE_EXTRA_CA_CERTS and trust the
                   # in-cluster claude-api-proxy's TLS leaf. The CA private
                   # key never leaves tank-operator.
                   reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
-                  reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: "ambience-issue-.*,tank-operator-issue-.*"
+                  reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: "ambience-issue-.*,tank-operator-issue-.*,glimmung-issue-.*"
                   reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
-                  reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: "ambience-issue-.*,tank-operator-issue-.*"
+                  reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: "ambience-issue-.*,tank-operator-issue-.*,glimmung-issue-.*"
               data:
                 ca.crt: |
               $(printf '%s\n' "$CA" | sed 's/^/    /')
