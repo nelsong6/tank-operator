@@ -23,10 +23,11 @@ session:
   image: romainecr.azurecr.io/claude-container:3d5130b
   serviceAccount: claude-session
   # Idle reaper: a session with no open WebSocket connections for this many
-  # seconds is deleted by the orchestrator's background sweep. Honors the
-  # README's "killed when the tab closes" promise (with a grace window for
-  # tab reloads / brief network blips).
-  idleTimeoutSeconds: 300
+  # seconds is deleted by the orchestrator's background sweep. 7 days is
+  # effectively "manual close only" — the in-app close button is the
+  # primary teardown path; this only reaps truly abandoned sessions left
+  # running over a long weekend.
+  idleTimeoutSeconds: 604800
   reaperIntervalSeconds: 60
 
 ingress:
