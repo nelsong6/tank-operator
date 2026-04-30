@@ -85,6 +85,10 @@ Envoy config. Top-of-config rationale:
     refreshed token automatically.
   - 600s per-request timeout: Anthropic's streaming responses can be
     long-lived (large outputs, slow tool turns).
+  - access_log emits one line per HTTP transaction to stdout. Cheap,
+    and the line includes the upstream Anthropic request_id when the
+    response carries one — turning "which call 4xx'd?" into a
+    `kubectl logs -c envoy` grep.
 */}}
 apiVersion: v1
 kind: ConfigMap
@@ -119,6 +123,13 @@ data:
                     codec_type: AUTO
                     stream_idle_timeout: 600s
                     request_timeout: 600s
+                    access_log:
+                      - name: envoy.access_loggers.stdout
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                          log_format:
+                            text_format_source:
+                              inline_string: "[%START_TIME%] %REQ(:METHOD)% %REQ(:PATH)% -> %RESPONSE_CODE% %RESPONSE_FLAGS% rx=%BYTES_RECEIVED% tx=%BYTES_SENT% dur_ms=%DURATION% req_id=%REQ(x-request-id)% anthropic_req_id=%RESP(anthropic-request-id)% retry=%REQ(x-envoy-attempt-count)%\n"
                     common_http_protocol_options:
                       idle_timeout: 600s
                     http_filters:
