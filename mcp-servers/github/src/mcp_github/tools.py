@@ -27,6 +27,46 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         return {k: r.get(k) for k in ("full_name", "description", "default_branch", "language", "stargazers_count", "open_issues_count", "updated_at")}
 
     @mcp.tool()
+    def create_repository(
+        name: str,
+        description: str | None = None,
+        private: bool = False,
+        auto_init: bool = True,
+        org: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new repository.
+
+        If `org` is given, creates under that organization via
+        POST /orgs/{org}/repos. Works with App installation tokens when the
+        installation has 'Administration: Write' on the org.
+
+        Otherwise creates under the authenticated user's account via
+        POST /user/repos. GitHub does not document App installation tokens as
+        a supported auth method for that endpoint, so this path will likely
+        return 403; create personal-account repos with `gh repo create` or a
+        PAT in that case.
+
+        auto_init=True seeds an initial README so the repo has a default
+        branch you can immediately commit to via create_or_update_file or
+        commit_to_branch. Set False if you'll push initial content yourself.
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "private": private,
+            "auto_init": auto_init,
+        }
+        if description is not None:
+            payload["description"] = description
+        path = f"/orgs/{org}/repos" if org else "/user/repos"
+        r = gh.post(path, json=payload)
+        return {
+            "full_name": r["full_name"],
+            "html_url": r["html_url"],
+            "default_branch": r["default_branch"],
+            "private": r["private"],
+        }
+
+    @mcp.tool()
     def get_file_contents(owner: str, name: str, path: str, ref: str | None = None) -> dict[str, Any]:
         """Fetch a file's contents from a repo. Base64-decoded; binary files are returned as-is."""
         params = {"ref": ref} if ref else None
