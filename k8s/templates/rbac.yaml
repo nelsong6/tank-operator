@@ -34,3 +34,21 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: tank-operator-sessions-mgr
+---
+# Session SA gets cluster-admin so an in-cluster Claude session can act on
+# the cluster directly (patch finalizers, delete wedged releases, edit
+# shared infra) instead of asking the user to run every kubectl by hand.
+# This is a single-user personal AKS cluster; no multi-tenant safety
+# concern. If this cluster ever turns multi-tenant, scope this down.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.session.serviceAccount }}-cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.session.serviceAccount }}
+    namespace: {{ .Values.namespaces.sessions }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
