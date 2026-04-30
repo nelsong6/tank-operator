@@ -1,18 +1,16 @@
-# Cluster-wide read for the server SA. kubectl/helm running inside the pod
-# authenticate as this SA; allowlists in mcp_k8s/tools.py prevent mutating
-# verbs the SA isn't allowed at the tool layer. RBAC here is the second line
-# of defense — even if the allowlist were bypassed, the SA can only do what
-# the rules below permit.
+# Cluster-admin-equivalent RBAC for the server SA. kubectl/helm running
+# inside the pod authenticate as this SA; whatever tools mcp_k8s/tools.py
+# exposes, this binding is permissive enough to back them.
 #
-# `view` ClusterRole excludes secrets, which would break helm list (helm
-# stores release state as a Secret). So a custom rule that mirrors `view`
-# semantics but covers everything via the wildcard.
+# This is a deliberate design shift away from the prior read-mostly model.
+# The tool allowlist in mcp_k8s/tools.py is now the *only* layer scoping
+# what an agent can do — RBAC no longer functions as a second line of
+# defense. Trade-off: a bug in the tool layer is sufficient to mutate or
+# delete arbitrary cluster state.
 #
-# Two narrow write paths exist for unwedging stuck workloads:
-#   - delete on pods: paired with the delete_pod tool. Pods are managed
-#     by their parent controllers — deletion is reversible.
-#   - patch on apps/{deployments,statefulsets,daemonsets}: paired with
-#     the rollout_restart tool. Just touches the pod-template annotation.
+# Note: the ClusterRole/Binding name (mcp-k8s-reader) and the file name
+# (cluster-reader.yaml) are now misleading. Left unchanged here to keep
+# this commit minimal; rename in a follow-up.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -20,15 +18,9 @@ metadata:
 rules:
   - apiGroups: ["*"]
     resources: ["*"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["delete"]
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["patch"]
+    verbs: ["*"]
   - nonResourceURLs: ["*"]
-    verbs: ["get"]
+    verbs: ["*"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
