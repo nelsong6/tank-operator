@@ -98,6 +98,11 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 COPY claude-container/tank-bootstrap.sh /opt/tank/bootstrap.sh
 RUN chmod +x /opt/tank/bootstrap.sh
 
+# Skill-sync helper: tank-bootstrap.sh runs this on every session boot
+# to pull SKILL.md files from external repos via the github MCP.
+COPY claude-container/fetch-skills.py /opt/tank/fetch-skills.py
+RUN chmod +x /opt/tank/fetch-skills.py
+
 # Hide tmux's status bar so the claude TUI gets the full terminal height.
 # tmux is the WS-reconnect-survival wrapper for the claude session
 # (see tank-bootstrap.sh); the status bar would steal one row.

@@ -27,6 +27,11 @@
 #                                   in-cluster api-proxy strips claude's
 #                                   Authorization on every request and
 #                                   injects the current real Bearer.
+#   ~/.claude/skills/<name>/      — SKILL.md files pulled from external
+#                                   repos via /opt/tank/fetch-skills.py
+#                                   (uses the github MCP for auth; soft
+#                                   fails so a transient MCP error does
+#                                   not block boot).
 #
 # claude runs inside a named tmux session ("tank") so reconnects re-attach
 # the same PTY/scrollback. If claude exits we fall through to bash so the
@@ -120,4 +125,9 @@ cat > $HOME/.claude.json <<EOF
   }
 }
 EOF
+# Pull SKILL.md files from external repos via the github MCP. Soft fail
+# — a transient MCP error logs `[skills]` lines but does not block boot.
+if [ -x /opt/tank/fetch-skills.py ]; then
+  python3 /opt/tank/fetch-skills.py 2>&1 | sed 's/^/[skills] /' || true
+fi
 exec tmux new-session -s tank 'claude; exec bash'
