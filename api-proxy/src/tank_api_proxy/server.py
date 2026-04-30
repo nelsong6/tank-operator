@@ -8,16 +8,22 @@ We act on two messages per stream:
     (always the placeholder ``managed-by-tank-operator`` from the bootstrap),
     inject the current real access token from cache.
   - ``response_headers``: peek ``:status``. On 401 kick off a refresh in the
-    background — Envoy's per-route retry policy resends the request, and by
-    the time the retry's request_headers arrives at us the lock either holds
-    a fresh token or makes the retry wait until one is in cache.
+    background, but only if one isn't already in flight (single-flight guard
+    to prevent thundering-herd rotation storms when many concurrent requests
+    all see 401). Envoy's per-route retry policy resends the request; the
+    retry's request_headers callback awaits the in-flight refresh task before
+    injecting, so the retry always sees a fresh token.
 
 State:
   - ``_cached_access`` / ``_cached_refresh``: in-memory copy of the latest
     tokens. Initialized lazily from the mounted credentials.json the first
     time we need them, refreshed in place by ``_refresh()``.
-  - ``_lock``: serializes refreshes so a 401 storm fans into exactly one
-    upstream call to platform.claude.com.
+  - ``_refresh_task``: most recent refresh task. Its presence + not done()
+    is the single-flight token; ``_get_access_token`` awaits it when
+    ``_access_invalidated`` is set.
+  - ``_lock``: serializes the actual rotation HTTP call so concurrent waiters
+    all see the same fresh token (and so a stale-file reload in ``_refresh``
+    is atomic with the rotate).
 
 KV write failure is non-fatal: see the comment on ``_persist_to_kv``.
 
@@ -118,12 +124,19 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
         self._cached_blob: dict[str, Any] | None = None
         self._lock = asyncio.Lock()
         # Set when an upstream 401 is observed for the current cached
-        # token. The next request_headers callback awaits the lock (forcing
-        # a refresh to complete) before injecting; once refresh updates
-        # _cached_access we clear the flag so subsequent requests don't
-        # block. Without this, envoy's retry would re-inject the same
-        # invalid token and the retry would 401 too.
+        # token. The next request_headers callback awaits the in-flight
+        # refresh task before injecting; once refresh updates _cached_access
+        # we clear the flag so subsequent requests don't block.
         self._access_invalidated = False
+        # Most recent refresh task, retained as a single-flight handle:
+        # _on_response_headers consults `_refresh_task is None or .done()`
+        # before scheduling a new one, and _get_access_token awaits it
+        # when the cached token is invalidated. Without this dedupe, N
+        # concurrent 401s would each schedule their own _refresh(), each
+        # successive rotation would single-use-invalidate its predecessor's
+        # refresh token, and the proxy logs would show a "rotation storm"
+        # of five+ successful rotations in two seconds.
+        self._refresh_task: asyncio.Task[None] | None = None
         self._kv_url = os.environ.get("AZURE_KEYVAULT_URL", "")
         self._kv_secret_name = os.environ.get(
             "CLAUDE_CREDENTIALS_KV_KEY", "claude-code-credentials"
@@ -170,29 +183,35 @@ class AuthInjector(ext_proc_grpc.ExternalProcessorServicer):
     ) -> ext_proc_pb2.ProcessingResponse:
         status = _peek_status(msg)
         if status == 401:
-            # Mark the cached token poisoned so the next request_headers
-            # blocks for refresh rather than re-injecting it. Kick the
-            # refresh in the background; envoy's retry policy resends the
-            # request, and by the time the retry's request_headers callback
-            # runs the lock either holds the new token or makes us wait.
             self._access_invalidated = True
-            asyncio.create_task(self._refresh())
+            # Single-flight: only schedule a refresh if one isn't already
+            # running. Subsequent 401s in the same burst piggy-back on the
+            # in-flight task via _get_access_token.await(self._refresh_task).
+            if self._refresh_task is None or self._refresh_task.done():
+                self._refresh_task = asyncio.create_task(self._refresh())
         return ext_proc_pb2.ProcessingResponse(response_headers=ext_proc_pb2.HeadersResponse())
 
     async def _get_access_token(self) -> str:
         if self._cached_access is not None and not self._access_invalidated:
             return self._cached_access
-        # Either first request after startup (no cache) OR last response
-        # was 401 and we need to wait for the refresh task to finish.
-        # Acquiring the lock serializes us behind any in-flight refresh.
+        # The cache is poisoned (or empty). If a refresh is already in
+        # flight, wait for it; awaiting the task guarantees we see the
+        # fresh _cached_access on return. The earlier "acquire-and-release
+        # the lock" pattern raced: if this coroutine grabbed the lock
+        # before the queued _refresh task did, it returned a stale token
+        # and the upstream re-401'd, scheduling yet another refresh.
+        task = self._refresh_task
+        if task is not None and not task.done():
+            try:
+                await task
+            except Exception:
+                # _refresh logs and swallows; we just fall through and
+                # serve whatever's in cache (worst case: placeholder, and
+                # envoy's retry-on-401 will trigger another refresh round).
+                pass
         async with self._lock:
             if self._cached_access is None:
                 self._reload_from_file()
-            if self._access_invalidated:
-                # Refresh task may have already cleared this; if not, we
-                # acquired the lock before it ran. Either way, the lock
-                # release means we're past any concurrent _refresh() call.
-                pass
         # _reload_from_file may have failed to find a token; surface as a
         # placeholder — Envoy will get 401 from upstream and retry, and
         # the retry path will trigger a refresh.
