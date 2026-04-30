@@ -5,6 +5,7 @@
 !claude-container/mcp.json
 !claude-container/entrypoint.sh
 !claude-container/tank-bootstrap.sh
+!claude-container/fetch-skills.py
 !claude-container/platform-mcp
 claude-container/platform-mcp/**/__pycache__
 claude-container/platform-mcp/**/*.egg-info
