@@ -3,12 +3,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
+from .auth import (
+    COOKIE_NAME,
+    SESSION_TTL_SECONDS,
+    User,
+    _decode_session_token,
+    current_user,
+    current_user_ws,
+    exchange_microsoft_token,
+    mint_install_state,
+    verify_install_state,
+)
 from .credentials_seed import CredentialsSeedError, harvest_and_save
 from .exec_proxy import bridge
 from .profiles import ProfileStore
@@ -71,10 +81,19 @@ async def microsoft_login(body: LoginBody, request: Request) -> JSONResponse:
     # repeat logins (single-document read), creates the row only on first
     # login. Hooked here rather than in current_user so we don't add a
     # Cosmos round-trip to every request.
-    await profiles.get_or_create(user.email)
+    profile = await profiles.get_or_create(user.email)
     secure = request.url.scheme == "https"
     response = JSONResponse(
-        {"token": session_token, "user": {"sub": user.sub, "email": user.email, "name": user.name}}
+        {
+            "token": session_token,
+            "user": {
+                "sub": user.sub,
+                "email": user.email,
+                "name": user.name,
+                "github_login": profile.github_login,
+                "installation_id": profile.installation_id,
+            },
+        }
     )
     response.set_cookie(
         key=COOKIE_NAME,
@@ -111,6 +130,85 @@ async def me(user: User = Depends(current_user)) -> dict:
         "github_login": profile.github_login,
         "installation_id": profile.installation_id,
     }
+
+
+# ----------------------------------------------------------------------------
+# GitHub App install flow (#57 stage 2)
+#
+# Onboarding wall in the SPA → /api/github/install/url 302s to GitHub's
+# install page → user grants on GitHub → GitHub redirects to the App's
+# Setup URL (configured in the GitHub UI to point at /api/github/install/
+# callback) → callback persists installation_id on the profile and 302s
+# back to /. Whole flow is browser-driven; no orchestrator-side outbound
+# calls to GitHub.
+# ----------------------------------------------------------------------------
+
+GITHUB_APP_SLUG = os.environ.get("GITHUB_APP_SLUG", "tank-operator")
+
+
+@app.get("/api/github/install/url")
+async def github_install_url(user: User = Depends(current_user)) -> RedirectResponse:
+    """Redirect the caller to GitHub's install consent page.
+
+    The state JWT binds the install flow to the caller's email so the
+    callback can refuse a redirect that didn't originate from us. 10-min
+    TTL — long enough for "click → grant → return" without leaving a stale
+    token usable to retry later.
+    """
+    state = mint_install_state(user.email)
+    target = f"https://github.com/apps/{GITHUB_APP_SLUG}/installations/new?state={state}"
+    return RedirectResponse(url=target, status_code=302)
+
+
+@app.get("/api/github/install/callback")
+async def github_install_callback(
+    request: Request,
+    installation_id: int | None = None,
+    setup_action: str | None = None,
+    state: str | None = None,
+    auth_token: str | None = Cookie(default=None),
+) -> RedirectResponse:
+    """GitHub's redirect target after install consent.
+
+    Validates the state JWT we minted and the caller's session cookie agree
+    on email — defense-in-depth against a phishing scenario where an
+    attacker mints a state for their own email and tricks a victim into
+    completing the install. Without the cookie check, the victim's
+    installation_id would land under the attacker's profile.
+
+    On any validation failure, redirect to /?install_error=<reason> so the
+    SPA can render a banner instead of leaving the user on a backend 4xx.
+    """
+
+    def _err(reason: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/?install_error={reason}", status_code=302)
+
+    if not state:
+        return _err("missing_state")
+    if not installation_id:
+        # GitHub sends `setup_action=request` for org-controlled installs that
+        # are pending admin approval; installation_id arrives later via the
+        # webhook (out of scope for stage 2).
+        return _err("pending_approval" if setup_action == "request" else "missing_installation_id")
+    try:
+        state_email = verify_install_state(state)
+    except HTTPException:
+        return _err("invalid_state")
+
+    if not auth_token:
+        return _err("session_expired")
+    try:
+        cookie_user = _decode_session_token(auth_token)
+    except HTTPException:
+        return _err("session_invalid")
+
+    if cookie_user.email.lower() != state_email:
+        return _err("email_mismatch")
+
+    await profiles.update_installation(
+        email=state_email, installation_id=installation_id, github_login=None
+    )
+    return RedirectResponse(url="/", status_code=302)
 
 
 class CreateSessionBody(BaseModel):

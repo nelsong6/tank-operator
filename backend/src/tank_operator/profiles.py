@@ -143,7 +143,12 @@ class ProfileStore:
         self, email: str, installation_id: int, github_login: str | None
     ) -> Profile:
         """Set the profile's GitHub App installation. Used by the install
-        callback (#57 stage 2)."""
+        callback (#57 stage 2).
+
+        Tolerates a missing row — if the user hits the callback without a
+        prior login (stale tab, manual URL), we create the profile rather
+        than 500. The state JWT verified by the caller is the auth anchor.
+        """
         normalized = email.lower()
         if not self._enabled or self._container is None:
             return Profile(
@@ -151,11 +156,19 @@ class ProfileStore:
                 installation_id=installation_id,
                 github_login=github_login,
             )
-        doc = await self._container.read_item(
-            item=normalized, partition_key=normalized
-        )
+        now = _now_iso()
+        try:
+            doc = await self._container.read_item(
+                item=normalized, partition_key=normalized
+            )
+        except CosmosResourceNotFoundError:
+            doc = {
+                "id": normalized,
+                "email": normalized,
+                "created_at": now,
+            }
         doc["installation_id"] = installation_id
         doc["github_login"] = github_login
-        doc["updated_at"] = _now_iso()
-        await self._container.replace_item(item=normalized, body=doc)
+        doc["updated_at"] = now
+        await self._container.upsert_item(body=doc)
         return _profile_from_doc(doc)
