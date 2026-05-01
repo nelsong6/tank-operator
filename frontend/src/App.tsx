@@ -10,6 +10,8 @@ interface Session {
   owner: string;
   status: string;
   mode: SessionMode;
+  // User-set friendly name. Null when unset; UI falls back to the id slug.
+  name: string | null;
 }
 
 const MODE_LABELS: Record<SessionMode, string> = {
@@ -91,6 +93,11 @@ export function App() {
   const [active, setActive] = useState<string | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  // Inline rename state. `editingTab` is the session id whose tab label is
+  // currently an <input>; `editingValue` holds the in-progress name. Reset
+  // when commit or cancel fires.
+  const [editingTab, setEditingTab] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
   // One Terminal handle per open tab — populated by Terminal's forwardRef
   // callback. Used by the "Remote control" tab-bar button to inject the
   // /remote-control slash command into the live WS.
@@ -185,6 +192,42 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function renameSession(id: string, nextName: string | null) {
+    try {
+      const res = await authedFetch(`/api/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nextName }),
+      });
+      if (!res.ok) throw new Error(`rename failed: ${res.status}`);
+      const updated: Session = await res.json();
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, name: updated.name ?? null } : s))
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function startEditing(id: string, current: string | null) {
+    setEditingTab(id);
+    setEditingValue(current ?? "");
+  }
+
+  function commitEditing() {
+    if (editingTab) {
+      const trimmed = editingValue.trim();
+      void renameSession(editingTab, trimmed === "" ? null : trimmed);
+    }
+    setEditingTab(null);
+    setEditingValue("");
+  }
+
+  function cancelEditing() {
+    setEditingTab(null);
+    setEditingValue("");
   }
 
   async function deleteSession(id: string) {
@@ -289,8 +332,8 @@ export function App() {
               const isOpen = tabs.includes(s.id);
               return (
                 <li key={s.id} className={isOpen ? "is-open" : ""}>
-                  <button className="session-open" onClick={() => openTab(s.id)}>
-                    <span className="session-id">{s.id}</span>
+                  <button className="session-open" onClick={() => openTab(s.id)} title={s.id}>
+                    <span className="session-id">{s.name ?? s.id}</span>
                     <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
                     <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
                   </button>
@@ -365,12 +408,35 @@ export function App() {
                 const status = s?.status ?? "Pending";
                 const isConfig = s?.mode === "config";
                 const isSubscription = s?.mode === "subscription";
+                const displayName = s?.name ?? id;
+                const isEditing = editingTab === id;
                 return (
                   <div key={id} className={`tab ${active === id ? "active" : ""}`}>
-                    <button className="tab-label" onClick={() => setActive(id)}>
-                      <span className="id">{id}</span>
-                      <span className={`status status-${status.toLowerCase()}`}>{status}</span>
-                    </button>
+                    {isEditing ? (
+                      <input
+                        className="tab-name-input"
+                        value={editingValue}
+                        autoFocus
+                        onChange={(e) => setEditingValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitEditing();
+                          else if (e.key === "Escape") cancelEditing();
+                        }}
+                        onBlur={commitEditing}
+                        placeholder={id}
+                        maxLength={80}
+                      />
+                    ) : (
+                      <button
+                        className="tab-label"
+                        onClick={() => setActive(id)}
+                        onDoubleClick={() => startEditing(id, s?.name ?? null)}
+                        title={s?.name ? `${id} — double-click to rename` : "double-click to rename"}
+                      >
+                        <span className="id">{displayName}</span>
+                        <span className={`status status-${status.toLowerCase()}`}>{status}</span>
+                      </button>
+                    )}
                     {isConfig && (
                       <button
                         className="tab-action"
