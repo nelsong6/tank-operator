@@ -124,6 +124,28 @@ async def delete_session(session_id: str, user: User = Depends(current_user)) ->
     return {"id": session_id, "status": "deleted"}
 
 
+class PatchSessionBody(BaseModel):
+    # Empty string / null clears the name; otherwise stored verbatim (trimmed
+    # + length-capped server-side).
+    name: str | None = None
+
+
+@app.patch("/api/sessions/{session_id}")
+async def patch_session(
+    session_id: str,
+    body: PatchSessionBody,
+    user: User = Depends(current_user),
+) -> SessionInfo:
+    try:
+        return await sessions.set_name(
+            owner=user.email, session_id=session_id, name=body.name
+        )
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="session not found")
+    except SessionNotOwned:
+        raise HTTPException(status_code=403, detail="session not owned by caller")
+
+
 @app.post("/api/sessions/{session_id}/save-credentials")
 async def save_credentials(
     session_id: str, user: User = Depends(current_user)

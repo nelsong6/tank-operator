@@ -85,6 +85,14 @@ CONFIG_MODE = "config"
 # claude is visibly ready, no race possible.
 
 
+# Friendly-name annotation set by PATCH /api/sessions/{id}. Stored on the
+# Deployment so it survives orchestrator restarts without a separate store.
+# K8s allows up to ~256 KB of annotations per object — we cap inbound names
+# well below that for UI sanity.
+NAME_ANNOTATION = "tank-operator/display-name"
+MAX_NAME_LENGTH = 80
+
+
 @dataclass
 class SessionInfo:
     id: str
@@ -92,6 +100,10 @@ class SessionInfo:
     owner: str
     status: str
     mode: str
+    # User-provided friendly name. None when unset; the frontend falls back
+    # to the session id slug. The slug stays canonical in URLs and the
+    # Deployment/pod name — this is purely a display label.
+    name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -377,6 +389,7 @@ class SessionManager:
                 owner=owner,
                 status=_deployment_status(d),
                 mode=d.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE),
+                name=(d.metadata.annotations or {}).get(NAME_ANNOTATION),
             )
             for d in deployments.items
         ]
@@ -409,6 +422,50 @@ class SessionManager:
             owner=owner,
             status=_deployment_status(deployment),
             mode=mode,
+            name=(deployment.metadata.annotations or {}).get(NAME_ANNOTATION),
+        )
+
+    async def set_name(
+        self, owner: str, session_id: str, name: str | None
+    ) -> SessionInfo:
+        """Set or clear the friendly display name on a session.
+
+        Stored as an annotation on the Deployment, so it survives
+        orchestrator restarts and is visible to anyone who can read the
+        Deployment (the owner, via the existing label-scoped list).
+        Pass `None` (or empty string after trim) to clear.
+
+        Strategic-merge-patch semantics: a `None` annotation value tells
+        the apiserver to remove the key.
+        """
+        assert self._apps is not None
+        owner_label = _owner_label(owner)
+        deployment_name = f"session-{session_id}"
+        try:
+            deployment = await self._apps.read_namespaced_deployment(
+                name=deployment_name, namespace=SESSIONS_NAMESPACE
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                raise SessionNotFound(session_id) from e
+            raise
+        if deployment.metadata.labels.get("tank-operator/owner") != owner_label:
+            raise SessionNotOwned(session_id)
+        normalized = name.strip() if name else ""
+        annotation_value: str | None = normalized[:MAX_NAME_LENGTH] if normalized else None
+        await self._apps.patch_namespaced_deployment(
+            name=deployment_name,
+            namespace=SESSIONS_NAMESPACE,
+            body={"metadata": {"annotations": {NAME_ANNOTATION: annotation_value}}},
+        )
+        mode = deployment.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE)
+        return SessionInfo(
+            id=session_id,
+            pod_name=None,
+            owner=owner,
+            status=_deployment_status(deployment),
+            mode=mode,
+            name=annotation_value,
         )
 
     async def get_pod_name(self, owner: str, session_id: str, timeout: float = 90.0) -> str:
