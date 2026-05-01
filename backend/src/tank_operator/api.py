@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from .auth import COOKIE_NAME, SESSION_TTL_SECONDS, User, current_user, current_user_ws, exchange_microsoft_token
 from .credentials_seed import CredentialsSeedError, harvest_and_save
 from .exec_proxy import bridge
+from .profiles import ProfileStore
 from .sessions import (
     DEFAULT_SESSION_MODE,
     SESSION_MODES,
@@ -23,15 +24,18 @@ from .sessions import (
 )
 
 sessions = SessionManager()
+profiles = ProfileStore()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await profiles.startup()
     await sessions.startup()
     try:
         yield
     finally:
         await sessions.shutdown()
+        await profiles.shutdown()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -63,6 +67,11 @@ async def config() -> dict[str, str]:
 @app.post("/api/auth/microsoft/login", response_model=LoginResponse)
 async def microsoft_login(body: LoginBody, request: Request) -> JSONResponse:
     session_token, user = await exchange_microsoft_token(body.credential)
+    # Ensure a profile row exists for the authenticated email. Cheap on
+    # repeat logins (single-document read), creates the row only on first
+    # login. Hooked here rather than in current_user so we don't add a
+    # Cosmos round-trip to every request.
+    await profiles.get_or_create(user.email)
     secure = request.url.scheme == "https"
     response = JSONResponse(
         {"token": session_token, "user": {"sub": user.sub, "email": user.email, "name": user.name}}
@@ -87,8 +96,21 @@ async def logout() -> JSONResponse:
 
 
 @app.get("/api/auth/me", response_model=dict)
-async def me(user: User = Depends(current_user)) -> dict[str, str]:
-    return {"sub": user.sub, "email": user.email, "name": user.name}
+async def me(user: User = Depends(current_user)) -> dict:
+    """Identity + profile state for the signed-in user.
+
+    `installation_id` is null until the user installs the GitHub App via the
+    onboarding flow (#57 stage 2). The frontend uses its presence as the
+    signal for whether to show the install wall.
+    """
+    profile = await profiles.get_or_create(user.email)
+    return {
+        "sub": user.sub,
+        "email": user.email,
+        "name": user.name,
+        "github_login": profile.github_login,
+        "installation_id": profile.installation_id,
+    }
 
 
 class CreateSessionBody(BaseModel):
@@ -122,6 +144,28 @@ async def delete_session(session_id: str, user: User = Depends(current_user)) ->
     except SessionNotOwned:
         raise HTTPException(status_code=403, detail="session not owned by caller")
     return {"id": session_id, "status": "deleted"}
+
+
+class PatchSessionBody(BaseModel):
+    # Empty string / null clears the name; otherwise stored verbatim (trimmed
+    # + length-capped server-side).
+    name: str | None = None
+
+
+@app.patch("/api/sessions/{session_id}")
+async def patch_session(
+    session_id: str,
+    body: PatchSessionBody,
+    user: User = Depends(current_user),
+) -> SessionInfo:
+    try:
+        return await sessions.set_name(
+            owner=user.email, session_id=session_id, name=body.name
+        )
+    except SessionNotFound:
+        raise HTTPException(status_code=404, detail="session not found")
+    except SessionNotOwned:
+        raise HTTPException(status_code=403, detail="session not owned by caller")
 
 
 @app.post("/api/sessions/{session_id}/save-credentials")
