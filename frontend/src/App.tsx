@@ -10,6 +10,8 @@ interface Session {
   owner: string;
   status: string;
   mode: SessionMode;
+  // User-set friendly name. Null when unset; UI falls back to the id slug.
+  name: string | null;
 }
 
 const MODE_LABELS: Record<SessionMode, string> = {
@@ -30,6 +32,36 @@ interface SessionUser {
   sub: string;
   email: string;
   name: string;
+  // Profile fields from /api/auth/me. Null until the user completes the
+  // GitHub App install. installation_id presence drives the onboarding
+  // wall — null means show the install CTA, non-null means full app.
+  github_login: string | null;
+  installation_id: number | null;
+}
+
+// One-line summaries for the install_error reasons the backend may surface
+// via redirect query param after a failed install callback. Anything not in
+// the map renders as the raw reason — keeps unknown errors visible without
+// hardcoding every variant.
+const INSTALL_ERROR_HINTS: Record<string, string> = {
+  missing_state: "Install link expired before you returned. Try again.",
+  invalid_state: "Install link signature didn't validate. Try again.",
+  missing_installation_id: "GitHub didn't send an installation id. Re-run the install.",
+  pending_approval: "Your install needs an org admin's approval. Once they approve, log in again.",
+  session_expired: "Your session expired during install. Sign in again then re-run the install.",
+  session_invalid: "Your session token didn't validate. Sign in again.",
+  email_mismatch: "The signed-in account doesn't match the install link's email.",
+};
+
+function readInstallError(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("install_error");
+}
+
+function clearInstallError(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("install_error");
+  window.history.replaceState({}, "", url.toString());
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -81,6 +113,47 @@ function initials(user: SessionUser): string {
   return (first + second).toUpperCase().slice(0, 2);
 }
 
+function OnboardingWall({
+  user,
+  onLogout,
+}: {
+  user: SessionUser;
+  onLogout: () => Promise<void>;
+}) {
+  const [installError, setInstallError] = useState<string | null>(readInstallError);
+
+  function dismissError() {
+    setInstallError(null);
+    clearInstallError();
+  }
+
+  return (
+    <div className="welcome">
+      <div className="welcome-inner onboarding">
+        <h2 className="welcome-title">Connect GitHub</h2>
+        <p className="welcome-sub">
+          tank-operator needs the <code>tank-operator</code> GitHub App installed on your account so
+          your sessions can read and write your repos via mcp-github.
+        </p>
+        {installError && (
+          <pre className="error onboarding-error" onClick={dismissError} title="dismiss">
+            {INSTALL_ERROR_HINTS[installError] ?? installError}
+          </pre>
+        )}
+        <a className="btn-primary onboarding-cta" href="/api/github/install/url">
+          Install GitHub App
+        </a>
+        <p className="onboarding-meta">
+          Signed in as <strong>{user.email}</strong>.{" "}
+          <button className="link-button" onClick={onLogout}>
+            sign out
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -91,6 +164,11 @@ export function App() {
   const [active, setActive] = useState<string | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  // Inline rename state. `editingTab` is the session id whose tab label is
+  // currently an <input>; `editingValue` holds the in-progress name. Reset
+  // when commit or cancel fires.
+  const [editingTab, setEditingTab] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState("");
   // One Terminal handle per open tab — populated by Terminal's forwardRef
   // callback. Used by the "Remote control" tab-bar button to inject the
   // /remote-control slash command into the live WS.
@@ -187,6 +265,42 @@ export function App() {
     }
   }
 
+  async function renameSession(id: string, nextName: string | null) {
+    try {
+      const res = await authedFetch(`/api/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: nextName }),
+      });
+      if (!res.ok) throw new Error(`rename failed: ${res.status}`);
+      const updated: Session = await res.json();
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, name: updated.name ?? null } : s))
+      );
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  function startEditing(id: string, current: string | null) {
+    setEditingTab(id);
+    setEditingValue(current ?? "");
+  }
+
+  function commitEditing() {
+    if (editingTab) {
+      const trimmed = editingValue.trim();
+      void renameSession(editingTab, trimmed === "" ? null : trimmed);
+    }
+    setEditingTab(null);
+    setEditingValue("");
+  }
+
+  function cancelEditing() {
+    setEditingTab(null);
+    setEditingValue("");
+  }
+
   async function deleteSession(id: string) {
     try {
       const res = await authedFetch(`/api/sessions/${id}`, { method: "DELETE" });
@@ -235,6 +349,10 @@ export function App() {
 
   if (!user) {
     return <div className="boot-state"><span className="boot-text">signing in…</span></div>;
+  }
+
+  if (user.installation_id == null) {
+    return <OnboardingWall user={user} onLogout={logout} />;
   }
 
   return (
@@ -289,8 +407,8 @@ export function App() {
               const isOpen = tabs.includes(s.id);
               return (
                 <li key={s.id} className={isOpen ? "is-open" : ""}>
-                  <button className="session-open" onClick={() => openTab(s.id)}>
-                    <span className="session-id">{s.id}</span>
+                  <button className="session-open" onClick={() => openTab(s.id)} title={s.id}>
+                    <span className="session-id">{s.name ?? s.id}</span>
                     <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
                     <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
                   </button>
@@ -365,12 +483,35 @@ export function App() {
                 const status = s?.status ?? "Pending";
                 const isConfig = s?.mode === "config";
                 const isSubscription = s?.mode === "subscription";
+                const displayName = s?.name ?? id;
+                const isEditing = editingTab === id;
                 return (
                   <div key={id} className={`tab ${active === id ? "active" : ""}`}>
-                    <button className="tab-label" onClick={() => setActive(id)}>
-                      <span className="id">{id}</span>
-                      <span className={`status status-${status.toLowerCase()}`}>{status}</span>
-                    </button>
+                    {isEditing ? (
+                      <input
+                        className="tab-name-input"
+                        value={editingValue}
+                        autoFocus
+                        onChange={(e) => setEditingValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitEditing();
+                          else if (e.key === "Escape") cancelEditing();
+                        }}
+                        onBlur={commitEditing}
+                        placeholder={id}
+                        maxLength={80}
+                      />
+                    ) : (
+                      <button
+                        className="tab-label"
+                        onClick={() => setActive(id)}
+                        onDoubleClick={() => startEditing(id, s?.name ?? null)}
+                        title={s?.name ? `${id} — double-click to rename` : "double-click to rename"}
+                      >
+                        <span className="id">{displayName}</span>
+                        <span className={`status status-${status.toLowerCase()}`}>{status}</span>
+                      </button>
+                    )}
                     {isConfig && (
                       <button
                         className="tab-action"

@@ -100,6 +100,13 @@ cosmos:
   database: tank-operator
   profilesContainer: profiles
 
+# GitHub App slug used for the install URL the orchestrator redirects users
+# to (#57 stage 2). The App's Setup URL must be configured to point at
+# https://<hostname>/api/github/install/callback in the GitHub UI for
+# the onboarding flow to complete.
+github:
+  appSlug: tank-operator
+
 externalSecret:
   storeName: romaine-kv
   storeKind: ClusterSecretStore

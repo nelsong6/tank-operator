@@ -78,6 +78,12 @@ spec:
               value: {{ .Values.cosmos.database | quote }}
             - name: COSMOS_PROFILES_CONTAINER
               value: {{ .Values.cosmos.profilesContainer | quote }}
+            # GitHub App slug used to build the install URL in the
+            # onboarding flow (#57 stage 2). The App's Setup URL in the
+            # GitHub UI must point at /api/github/install/callback for
+            # the redirect to complete.
+            - name: GITHUB_APP_SLUG
+              value: {{ .Values.github.appSlug | quote }}
           envFrom:
             - secretRef:
                 name: {{ .Values.externalSecret.auth.secretName }}
