@@ -10,7 +10,6 @@ interface Session {
   owner: string;
   status: string;
   mode: SessionMode;
-  remote_url: string | null;
 }
 
 const MODE_LABELS: Record<SessionMode, string> = {
@@ -24,7 +23,7 @@ const MODE_HINTS: Record<SessionMode, string> = {
   subscription: "Default — uses claude.ai login",
   api_key: "Billed via API",
   config: "Log in once · seeds KV for future sessions",
-  remote_control: "Drive from claude.ai/code in your browser",
+  remote_control: "Auto-runs /remote-control · click the URL it prints",
 };
 
 const MODE_ORDER: SessionMode[] = ["subscription", "remote_control", "api_key", "config"];
@@ -72,17 +71,6 @@ function IconClose() {
          stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <line x1="4" y1="4" x2="12" y2="12" />
       <line x1="12" y1="4" x2="4" y2="12" />
-    </svg>
-  );
-}
-
-function IconExternal() {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="none"
-         stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="9,3 13,3 13,7" />
-      <line x1="13" y1="3" x2="7.5" y2="8.5" />
-      <path d="M11.5 9.5V12.5A1 1 0 0 1 10.5 13.5H3.5A1 1 0 0 1 2.5 12.5V5.5A1 1 0 0 1 3.5 4.5H6.5" />
     </svg>
   );
 }
@@ -147,12 +135,7 @@ export function App() {
     if (!user) return;
     const hasPending = tabs.some((id) => {
       const s = sessions.find((x) => x.id === id);
-      if (!s || s.status !== "Active") return true;
-      // Keep polling after Active until the remote-control bridge URL
-      // shows up — discovery happens via a one-shot exec the backend
-      // fires once the pod is Ready.
-      if (s.mode === "remote_control" && !s.remote_url) return true;
-      return false;
+      return !s || s.status !== "Active";
     });
     if (!hasPending) return;
     const t = setInterval(refresh, POLL_INTERVAL_MS);
@@ -295,7 +278,6 @@ export function App() {
             {sessions.length === 0 && <li className="sessions-empty">no sessions</li>}
             {sessions.map((s) => {
               const isOpen = tabs.includes(s.id);
-              const isRemote = s.mode === "remote_control";
               return (
                 <li key={s.id} className={isOpen ? "is-open" : ""}>
                   <button className="session-open" onClick={() => openTab(s.id)}>
@@ -303,27 +285,6 @@ export function App() {
                     <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
                     <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
                   </button>
-                  {isRemote && (s.remote_url ? (
-                    <a
-                      className="session-remote-link"
-                      href={s.remote_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="open in claude.ai/code"
-                      aria-label="open remote-control bridge"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <IconExternal />
-                    </a>
-                  ) : (
-                    <span
-                      className="session-remote-link is-pending"
-                      title="bridge URL not ready yet"
-                      aria-label="bridge starting"
-                    >
-                      <IconExternal />
-                    </span>
-                  ))}
                   <button
                     className="session-delete"
                     onClick={() => deleteSession(s.id)}
@@ -394,7 +355,6 @@ export function App() {
                 const s = sessions.find((x) => x.id === id);
                 const status = s?.status ?? "Pending";
                 const isConfig = s?.mode === "config";
-                const isRemote = s?.mode === "remote_control";
                 return (
                   <div key={id} className={`tab ${active === id ? "active" : ""}`}>
                     <button className="tab-label" onClick={() => setActive(id)}>
@@ -411,25 +371,6 @@ export function App() {
                         save credentials
                       </button>
                     )}
-                    {isRemote && (s?.remote_url ? (
-                      <a
-                        className="tab-action tab-action-link"
-                        href={s.remote_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        title="open this bridge in claude.ai/code"
-                      >
-                        open in browser
-                        <IconExternal />
-                      </a>
-                    ) : (
-                      <span
-                        className="tab-action is-pending"
-                        title="waiting for bridge to register"
-                      >
-                        starting…
-                      </span>
-                    ))}
                     <button
                       className="tab-close"
                       onClick={() => closeTab(id)}

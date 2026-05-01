@@ -23,8 +23,9 @@
 #                                   it stays correct as the image evolves) +
 #                                   in remote_control mode, a placeholder
 #                                   oauthAccount + remoteDialogSeen so
-#                                   `claude remote-control` clears its local
-#                                   eligibility + first-run-consent gates
+#                                   the `/remote-control` slash command
+#                                   clears its local eligibility +
+#                                   first-run-consent gates
 #   ~/.claude/.credentials.json   — only in subscription mode: a static
 #                                   placeholder blob. The real token is
 #                                   never written to the pod. The
@@ -158,25 +159,19 @@ if [ -x /opt/tank/fetch-skills.py ]; then
 fi
 
 if [ "${TANK_SESSION_MODE}" = "remote_control" ]; then
-  # The browser is the primary surface; the in-pod terminal is just a
-  # back-pocket shell for ad-hoc commands. Two windows in one tmux
-  # session: window 0 is bash (default attach target so the WS lands on
-  # something useful), window 1 runs `claude remote-control`.
+  # Same shape as subscription mode (one tmux session, claude in the
+  # foreground), but launch with the `/remote-control` slash command
+  # pre-typed so the bridge URL prints in the TUI on session start.
+  # The user clicks the URL in the TUI to continue from claude.ai/code;
+  # both surfaces share one conversation.
   #
-  # --debug-file is what makes the URL programmatically discoverable —
-  # the TUI prints it to stdout but redraws the buffer constantly, so
-  # scraping the pane is fragile. The structured log line
-  #   [bridge:api] POST /v1/environments/bridge -> 200 environment_id=env_XXX
-  # appears once per registration and survives across restarts. The
-  # orchestrator's exec_capture greps the last match and constructs
-  # https://claude.ai/code?environment=<id>.
-  mkdir -p "$HOME/.tank"
-  : > "$HOME/.tank/remote-debug.log"
-  tmux new-session -d -s tank -n shell 'exec bash'
-  tmux new-window -t tank: -n remote \
-    "exec claude remote-control --debug-file '$HOME/.tank/remote-debug.log' --spawn same-dir"
-  tmux select-window -t tank:shell
-  exec tmux attach-session -t tank
+  # Why not `claude remote-control` (the bridge-only mode)? The
+  # claude.ai/code UI's URL-arrival flow is broken upstream
+  # (anthropics/claude-code#34581 family) — multi-turn fails after the
+  # first reply when the worker is a bare bridge. The slash-command path
+  # attaches a real Claude Code TUI as the worker, which the URL-arrival
+  # flow handles correctly.
+  exec tmux new-session -s tank "claude '/remote-control'; exec bash"
 fi
 
 exec tmux new-session -s tank 'claude; exec bash'
