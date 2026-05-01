@@ -62,7 +62,7 @@ class PodNotReady(Exception):
     pass
 
 
-SESSION_MODES = ("api_key", "subscription", "config", "remote_control")
+SESSION_MODES = ("api_key", "subscription", "config")
 DEFAULT_SESSION_MODE = "subscription"
 # Config mode: a one-shot pod the user logs into via `claude /login` to seed
 # the OAuth credentials in KV. Differs from regular sessions in three ways:
@@ -74,19 +74,15 @@ DEFAULT_SESSION_MODE = "subscription"
 # reads ~/.claude/.credentials.json out of the pod via exec and writes it to
 # Key Vault.
 CONFIG_MODE = "config"
-# Remote-control mode: the pod runs `claude '/remote-control'` instead of
-# bare `claude`, so the bridge URL prints in the TUI on session start. The
-# user clicks the URL to continue from claude.ai/code; both surfaces share
-# one conversation. Otherwise plumbed identically to subscription mode
-# (same hostAliases, same cred placeholder, same MCP wiring).
-#
-# Originally invoked `claude remote-control` (bridge-only mode) and
-# extracted the bridge URL from a debug file for a one-click sidebar
-# button. That flow hit a claude.ai/code-side bug (anthropics/claude-code
-# #34581 family) where URL-arrival sessions fail after the first turn;
-# switching to the slash-command path makes multi-turn work, at the cost
-# of one extra click (open the TUI, click the URL).
-REMOTE_CONTROL_MODE = "remote_control"
+# Remote-control: there used to be a dedicated `remote_control` session mode
+# whose bootstrap auto-launched `claude '/remote-control'` to put the bridge
+# URL in the TUI on session start. That cold-start raced claude's slash
+# command registry init (the binary fetches GrowthBook flags / org info
+# before the registry is fully populated) and printed "Unknown command"
+# instead of running. The mode is gone. Subscription sessions get a
+# "Remote control" button in the tab bar (frontend/src/App.tsx) that
+# injects "/remote-control\r" into the live WS — the user clicks once
+# claude is visibly ready, no race possible.
 
 
 @dataclass

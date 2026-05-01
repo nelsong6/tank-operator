@@ -21,9 +21,10 @@
 #                                   pre-approved set of project-level MCP
 #                                   servers (read from /workspace/.mcp.json so
 #                                   it stays correct as the image evolves) +
-#                                   in remote_control mode, remoteDialogSeen
-#                                   so the `/remote-control` slash command
-#                                   skips its first-run consent prompt
+#                                   remoteDialogSeen so the `/remote-control`
+#                                   slash command skips its first-run consent
+#                                   prompt when the user clicks the frontend's
+#                                   "Remote control" button
 #   ~/.claude/.credentials.json   — only in subscription mode: a static
 #                                   placeholder blob. The real token is
 #                                   never written to the pod. The
@@ -76,7 +77,7 @@ if [ -f /workspace/.mcp.json ]; then
   mcp_enabled="$(jq -c '.mcpServers | keys' /workspace/.mcp.json)"
 fi
 case "${TANK_SESSION_MODE:-api_key}" in
-  subscription|remote_control)
+  subscription)
     # Static placeholder credentials. The api-proxy in front of
     # api.anthropic.com strips this Authorization on every request and
     # injects the real token, so claude never needs valid creds locally.
@@ -106,29 +107,26 @@ EOF
     api_key_block="\"customApiKeyResponses\": {\"approved\": [\"${last20}\", \"${last22}\"], \"rejected\": []},"
     ;;
 esac
-# Remote-control mode needs `remoteDialogSeen` in ~/.claude.json to
-# suppress the one-time interactive
+# `remoteDialogSeen` skips the one-time interactive
 #   "Enable Remote Control? (y/n)"
-# consent prompt that would otherwise block reading from stdin when the
-# bootstrap auto-runs `claude '/remote-control'`.
+# consent prompt the first time `/remote-control` runs in a session.
+# Set unconditionally because the frontend's "Remote control" button
+# can fire the slash command on any subscription session, and the
+# consent prompt would block stdin and break the flow.
 #
 # Earlier (cf57df6) we also wrote a placeholder `oauthAccount` with fake
 # UUIDs to satisfy `claude remote-control`'s (bridge mode) startup
-# eligibility check. That placeholder is GONE now: the slash-command
-# path runs its eligibility check synchronously when /remote-control is
-# invoked, and the fake UUIDs caused the command to refuse to launch
-# with "/remote-control isn't available in this environment". Real
-# OAuth bytes flow through the api-proxy's injection, so eligibility
-# resolves against the actor's real org without any local placeholder.
-remote_dialog_block=''
-if [ "${TANK_SESSION_MODE}" = "remote_control" ]; then
-  remote_dialog_block='"remoteDialogSeen": true,'
-fi
+# eligibility check. That placeholder is GONE: the slash-command path
+# runs its eligibility check against the actor's real org (resolved by
+# the api-proxy's OAuth injection), and the fake UUIDs caused the
+# command to refuse to launch with "/remote-control isn't available in
+# this environment". The whole `remote_control` session mode was
+# removed in favor of an in-TUI button — see frontend/src/App.tsx.
 cat > $HOME/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
   ${api_key_block}
-  ${remote_dialog_block}
+  "remoteDialogSeen": true,
   "officialMarketplaceAutoInstallAttempted": true,
   "officialMarketplaceAutoInstalled": true,
   "projects": {
@@ -151,22 +149,6 @@ EOF
 # — a transient MCP error logs `[skills]` lines but does not block boot.
 if [ -x /opt/tank/fetch-skills.py ]; then
   python3 /opt/tank/fetch-skills.py 2>&1 | sed 's/^/[skills] /' || true
-fi
-
-if [ "${TANK_SESSION_MODE}" = "remote_control" ]; then
-  # Same shape as subscription mode (one tmux session, claude in the
-  # foreground), but launch with the `/remote-control` slash command
-  # pre-typed so the bridge URL prints in the TUI on session start.
-  # The user clicks the URL in the TUI to continue from claude.ai/code;
-  # both surfaces share one conversation.
-  #
-  # Why not `claude remote-control` (the bridge-only mode)? The
-  # claude.ai/code UI's URL-arrival flow is broken upstream
-  # (anthropics/claude-code#34581 family) — multi-turn fails after the
-  # first reply when the worker is a bare bridge. The slash-command path
-  # attaches a real Claude Code TUI as the worker, which the URL-arrival
-  # flow handles correctly.
-  exec tmux new-session -s tank "claude '/remote-control'; exec bash"
 fi
 
 exec tmux new-session -s tank 'claude; exec bash'

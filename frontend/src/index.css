@@ -541,7 +541,6 @@ button:disabled {
 .mode-subscription   { background: var(--accent-soft); color: var(--accent-fg); }
 .mode-api_key        { background: rgba(168,85,247,0.12); color: #d8b4fe; }
 .mode-config         { background: rgba(244,114,182,0.12); color: #f9a8d4; }
-.mode-remote_control { background: rgba(34,211,238,0.12); color: #67e8f9; }
 
 /* Profile footer — OWUI Sidebar.svelte:1593-1638 */
 

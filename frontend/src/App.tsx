@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import { Terminal } from "./Terminal";
+import { useEffect, useRef, useState } from "react";
+import { Terminal, type TerminalHandle } from "./Terminal";
 import { authedFetch, bootstrapAuth, logout } from "./auth";
 
-type SessionMode = "api_key" | "subscription" | "config" | "remote_control";
+type SessionMode = "api_key" | "subscription" | "config";
 
 interface Session {
   id: string;
@@ -16,17 +16,15 @@ const MODE_LABELS: Record<SessionMode, string> = {
   api_key: "API key",
   subscription: "Subscription",
   config: "Config sub",
-  remote_control: "Remote control",
 };
 
 const MODE_HINTS: Record<SessionMode, string> = {
   subscription: "Default — uses claude.ai login",
   api_key: "Billed via API",
   config: "Log in once · seeds KV for future sessions",
-  remote_control: "Auto-runs /remote-control · click the URL it prints",
 };
 
-const MODE_ORDER: SessionMode[] = ["subscription", "remote_control", "api_key", "config"];
+const MODE_ORDER: SessionMode[] = ["subscription", "api_key", "config"];
 
 interface SessionUser {
   sub: string;
@@ -93,6 +91,10 @@ export function App() {
   const [active, setActive] = useState<string | null>(null);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  // One Terminal handle per open tab — populated by Terminal's forwardRef
+  // callback. Used by the "Remote control" tab-bar button to inject the
+  // /remote-control slash command into the live WS.
+  const terminalRefs = useRef<Map<string, TerminalHandle>>(new Map());
 
   useEffect(() => {
     bootstrapAuth()
@@ -194,6 +196,13 @@ export function App() {
     } catch (e) {
       setError(String(e));
     }
+  }
+
+  function startRemoteControl(id: string) {
+    // \r is what the terminal would send for the Enter key, so claude
+    // submits the line. Slash commands are evaluated client-side by the
+    // claude TUI, so this needs no orchestrator round-trip.
+    terminalRefs.current.get(id)?.sendInput("/remote-control\r");
   }
 
   async function saveCredentials(id: string) {
@@ -355,6 +364,7 @@ export function App() {
                 const s = sessions.find((x) => x.id === id);
                 const status = s?.status ?? "Pending";
                 const isConfig = s?.mode === "config";
+                const isSubscription = s?.mode === "subscription";
                 return (
                   <div key={id} className={`tab ${active === id ? "active" : ""}`}>
                     <button className="tab-label" onClick={() => setActive(id)}>
@@ -369,6 +379,16 @@ export function App() {
                         title="capture ~/.claude/.credentials.json from this pod and write it to KV"
                       >
                         save credentials
+                      </button>
+                    )}
+                    {isSubscription && (
+                      <button
+                        className="tab-action"
+                        onClick={() => startRemoteControl(id)}
+                        disabled={status !== "Active"}
+                        title="type /remote-control into this session — claude will print a https://claude.ai/code/session_… URL you can open"
+                      >
+                        Remote control
                       </button>
                     )}
                     <button
@@ -389,6 +409,10 @@ export function App() {
                 return (
                   <Terminal
                     key={id}
+                    ref={(h) => {
+                      if (h) terminalRefs.current.set(id, h);
+                      else terminalRefs.current.delete(id);
+                    }}
                     sessionId={id}
                     status={s?.status ?? "Pending"}
                     visible={active === id}

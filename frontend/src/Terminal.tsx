@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { registerWrappedLinks } from "./wrappedLinkProvider";
@@ -16,7 +16,20 @@ interface Props {
   visible: boolean;
 }
 
-export function Terminal({ sessionId, status, visible }: Props) {
+/**
+ * Imperative handle the parent uses to push input into the live WS — used by
+ * the "Remote control" tab-bar button to send "/remote-control\r" without
+ * the user having to focus the terminal and type. No-op if the WS isn't open
+ * yet (the button is disabled until status === "Active" anyway).
+ */
+export interface TerminalHandle {
+  sendInput: (s: string) => void;
+}
+
+export const Terminal = forwardRef<TerminalHandle, Props>(function Terminal(
+  { sessionId, status, visible },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -26,6 +39,13 @@ export function Terminal({ sessionId, status, visible }: Props) {
   useEffect(() => {
     if (status === "Active") setEverActive(true);
   }, [status]);
+
+  useImperativeHandle(ref, () => ({
+    sendInput: (s: string) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(s);
+    },
+  }), []);
 
   useEffect(() => {
     if (!everActive) return;
@@ -192,4 +212,4 @@ export function Terminal({ sessionId, status, visible }: Props) {
       style={{ display: visible ? "block" : "none" }}
     />
   );
-}
+});
