@@ -3,7 +3,7 @@ image:
   # SHA-pinned. The build workflow rewrites this line on every push to main
   # via a `[skip ci]` follow-up commit, so the cluster reconciles to the
   # exact image CI just produced — no implicit `:latest` drift.
-  tag: "05015bb"
+  tag: "c9fcde8"
   pullPolicy: IfNotPresent
 
 namespaces:
@@ -88,6 +88,17 @@ credentialRefresher:
   # Published to KV by infra/credential_refresher.tf (Terraform).
   kvClientIdKey: claude-credentials-refresher-mi-client-id
   kvTenantIdKey: mcp-tenant-id
+
+# Cosmos DB — per-user profile store for multi-user (#57). Provisioned by
+# infra/cosmos.tf; same workload-identity auth path as the KV writer above
+# (the `claude-credentials-refresher-identity` UAMI carries both roles).
+# Account name is a tofu variable defaulting to `tank-operator-romaine`;
+# update `endpoint` here if you set TF_VAR_cosmos_account_name to something
+# else.
+cosmos:
+  endpoint: https://tank-operator-romaine.documents.azure.com:443/
+  database: tank-operator
+  profilesContainer: profiles
 
 externalSecret:
   storeName: romaine-kv
