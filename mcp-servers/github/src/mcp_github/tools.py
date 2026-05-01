@@ -219,6 +219,44 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         return [l["name"] for l in r] if isinstance(r, list) else []
 
     @mcp.tool()
+    def create_label(
+        owner: str,
+        name: str,
+        label: str,
+        color: str = "cccccc",
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a label on a repo so it's available to add_labels.
+
+        Pairs with add_labels: GH 422s when add_labels is called with a
+        name the repo doesn't have, and there was no MCP path to create
+        one — sessions had to fall back to a direct API call with the
+        env-injected App credentials. This tool closes that gap.
+
+        `label`: the label name. GH rejects names containing commas (and
+        a few other characters); the 422 comes back as "name invalid"
+        with no further detail. Use spaces / hyphens / colons instead.
+        Max 50 chars.
+        `color`: 6-char hex without leading '#'. Default neutral gray.
+        `description`: max 100 chars; longer descriptions 422 with a
+        clear "description is too long" error.
+
+        Returns the created label record. Existing labels with the same
+        name 422 (caller should treat that as success-equivalent if the
+        intent is "ensure this label exists")."""
+        payload: dict[str, Any] = {"name": label, "color": color}
+        if description is not None:
+            payload["description"] = description
+        r = gh.post(f"/repos/{owner}/{name}/labels", json=payload)
+        return {
+            "id": r["id"],
+            "name": r["name"],
+            "color": r["color"],
+            "description": r.get("description"),
+            "url": r["url"],
+        }
+
+    @mcp.tool()
     def create_pull_request(owner: str, name: str, title: str, head: str, base: str, body: str | None = None, draft: bool = False) -> dict[str, Any]:
         """Open a PR. head='branch' or 'fork-owner:branch'. base is the target branch."""
         payload: dict[str, Any] = {"title": title, "head": head, "base": base, "draft": draft}
