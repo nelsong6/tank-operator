@@ -478,6 +478,27 @@ button:disabled {
   color: var(--text-primary);
 }
 
+.session-remote-link {
+  padding: var(--space-1);
+  color: #67e8f9;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
+.session-remote-link:hover:not(.is-pending) {
+  background: rgba(34, 211, 238, 0.12);
+  color: #a5f3fc;
+}
+
+.session-remote-link.is-pending {
+  color: var(--text-faint);
+  cursor: default;
+}
+
 .sessions-empty {
   display: flex;
   justify-content: center;
@@ -517,9 +538,10 @@ button:disabled {
   flex-shrink: 0;
 }
 
-.mode-subscription { background: var(--accent-soft); color: var(--accent-fg); }
-.mode-api_key      { background: rgba(168,85,247,0.12); color: #d8b4fe; }
-.mode-config       { background: rgba(244,114,182,0.12); color: #f9a8d4; }
+.mode-subscription   { background: var(--accent-soft); color: var(--accent-fg); }
+.mode-api_key        { background: rgba(168,85,247,0.12); color: #d8b4fe; }
+.mode-config         { background: rgba(244,114,182,0.12); color: #f9a8d4; }
+.mode-remote_control { background: rgba(34,211,238,0.12); color: #67e8f9; }
 
 /* Profile footer — OWUI Sidebar.svelte:1593-1638 */
 
@@ -764,6 +786,26 @@ button:disabled {
 
 .tab-action:hover:not(:disabled) { background: rgba(34, 197, 94, 0.12); }
 .tab-action:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Remote-control variant of the tab-bar action: cyan to match its mode chip,
+   and the link form gets an external-link affordance. The .is-pending
+   span variant looks like a disabled button without the disabled cursor. */
+.tab-action-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #67e8f9;
+  border-color: rgba(34, 211, 238, 0.45);
+  text-decoration: none;
+}
+
+.tab-action-link:hover { background: rgba(34, 211, 238, 0.12); }
+
+.tab-action.is-pending {
+  color: var(--text-faint);
+  border-color: var(--gray-800);
+  cursor: default;
+}
 
 .terminals {
   flex: 1;
