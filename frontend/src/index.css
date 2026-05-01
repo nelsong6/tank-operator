@@ -756,6 +756,20 @@ button:disabled {
 
 .tab.active .tab-label { color: var(--text-primary); }
 
+.tab-name-input {
+  background: transparent;
+  border: 1px solid var(--gray-600);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  margin: var(--space-1) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  min-width: 0;
+  outline: none;
+}
+.tab-name-input:focus { border-color: var(--accent, var(--gray-500)); }
+
 .tab-close {
   padding: var(--space-1) var(--space-2);
   color: var(--text-faint);
