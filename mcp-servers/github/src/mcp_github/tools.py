@@ -21,6 +21,43 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         ]
 
     @mcp.tool()
+    def mint_clone_token(repos: list[str]) -> dict[str, str]:
+        """Mint a short-lived (~1h) GitHub App installation token scoped
+        read-only over the given repos, suitable for `git clone` / `fetch` /
+        `pull` of private repos from a session container.
+
+        The token is scoped down to {contents: read, metadata: read} so it
+        cannot be used to push, comment, or otherwise mutate. All write
+        operations (commit, branch, PR, issue mutation) must go through the
+        other MCP tools — those route through the no-caller-SHA write
+        surface that's the project's contract for safe automated writes.
+        See tank-operator/CLAUDE.md → "mcp-github write surface".
+
+        Use from a session container as:
+            TOKEN=<value of `token` from this call>
+            git clone https://x-access-token:${TOKEN}@github.com/owner/name.git
+
+        Args:
+            repos: list of "owner/name" strings to scope the token to.
+                Required — blanket-scoped tokens are intentionally not
+                offered; pass exactly the repos you need.
+
+        Returns: {"token": "...", "expires_at": "<iso8601>"}.
+        """
+        if not repos:
+            raise ValueError("mint_clone_token: pass at least one repo (e.g. ['nelsong6/glimmung'])")
+        repo_names: list[str] = []
+        for r in repos:
+            if "/" not in r:
+                raise ValueError(f"repo must be 'owner/name', got: {r}")
+            repo_names.append(r.split("/", 1)[1])
+        token, expires_at = gh.mint_scoped_token(
+            repositories=repo_names,
+            permissions={"contents": "read", "metadata": "read"},
+        )
+        return {"token": token, "expires_at": expires_at}
+
+    @mcp.tool()
     def get_repo(owner: str, name: str) -> dict[str, Any]:
         """Return metadata for a single repo."""
         r = gh.get(f"/repos/{owner}/{name}")

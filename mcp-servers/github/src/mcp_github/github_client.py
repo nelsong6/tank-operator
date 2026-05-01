@@ -71,3 +71,16 @@ class GitHubClient:
         r = httpx.request("DELETE", f"{GITHUB_API}{path}", headers=self._headers(), json=json, timeout=15.0)
         r.raise_for_status()
         return r.json() if r.content else None
+
+    def mint_scoped_token(
+        self,
+        *,
+        repositories: list[str] | None = None,
+        permissions: dict[str, str] | None = None,
+    ) -> tuple[str, str]:
+        """Pass-through to the underlying minter. Surfaces a one-shot scoped
+        token to callers (the `mint_clone_token` MCP tool); the cached
+        process token used for outgoing API calls is unaffected."""
+        return self._minter.mint_scoped_token(
+            repositories=repositories, permissions=permissions,
+        )
