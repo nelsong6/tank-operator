@@ -43,7 +43,7 @@ Record the session as a GitHub issue in the current repo, labelled `session-log`
    - `2026-04-28: ArgoCD MCP + CI identity untangle`
    - `2026-04-28: fix /done skill to file GitHub issues`
 4. **Create the issue with the `session-log` label.** Capture the URL — you'll surface it in step 5.
-5. **Leave the issue open.** The user manages state — they may want to triage, link follow-ups, or close after review. Don't close automatically.
+5. **Close the issue immediately on creation.** The session-log issue is a timestamped record for later reference, not actionable work. Closing it on creation keeps the open backlog focused on real work and signals "history, not todo." Surface the URL in the report (step 5) regardless — it remains discoverable via `state=closed` issue queries.
 
 ## 4. Audit documented descriptions
 
