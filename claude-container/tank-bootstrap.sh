@@ -20,7 +20,11 @@
 #                                   official-marketplace auto-install flags +
 #                                   pre-approved set of project-level MCP
 #                                   servers (read from /workspace/.mcp.json so
-#                                   it stays correct as the image evolves)
+#                                   it stays correct as the image evolves) +
+#                                   in remote_control mode, a placeholder
+#                                   oauthAccount + remoteDialogSeen so
+#                                   `claude remote-control` clears its local
+#                                   eligibility + first-run-consent gates
 #   ~/.claude/.credentials.json   — only in subscription mode: a static
 #                                   placeholder blob. The real token is
 #                                   never written to the pod. The
@@ -103,10 +107,32 @@ EOF
     api_key_block="\"customApiKeyResponses\": {\"approved\": [\"${last20}\", \"${last22}\"], \"rejected\": []},"
     ;;
 esac
+# Remote-control mode needs two extra fields in ~/.claude.json that
+# subscription mode does not. `claude remote-control` runs a local
+# eligibility gate before registering the bridge:
+#   if (!r67()?.organizationUuid)
+#     return "Unable to determine your organization for Remote Control eligibility..."
+# r67() reads oauthAccount from ~/.claude.json. Without a placeholder
+# the bridge exits before writing its first [bridge:init] line and the
+# tmux window closes. The api-proxy resolves the real org server-side
+# at POST /v1/environments/bridge from the actor's session token, so
+# the placeholder UUID never reaches platform.claude.com.
+#
+# remoteDialogSeen suppresses the one-time interactive
+#   "Enable Remote Control? (y/n)"
+# consent prompt that would otherwise block reading from stdin.
+oauth_account_block=''
+remote_dialog_block=''
+if [ "${TANK_SESSION_MODE}" = "remote_control" ]; then
+  oauth_account_block='"oauthAccount": {"accountUuid":"00000000-0000-0000-0000-000000000001","emailAddress":"tank@example.invalid","organizationUuid":"00000000-0000-0000-0000-000000000002","displayName":"tank","hasExtraUsageEnabled":false,"billingType":"max","accountCreatedAt":"2024-01-01T00:00:00Z","subscriptionCreatedAt":"2024-01-01T00:00:00Z","ccOnboardingFlags":{},"claudeCodeTrialEndsAt":null,"claudeCodeTrialDurationDays":null,"seatTier":null},'
+  remote_dialog_block='"remoteDialogSeen": true,'
+fi
 cat > $HOME/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
   ${api_key_block}
+  ${oauth_account_block}
+  ${remote_dialog_block}
   "officialMarketplaceAutoInstallAttempted": true,
   "officialMarketplaceAutoInstalled": true,
   "projects": {
