@@ -93,13 +93,11 @@ externalSecret:
   storeName: romaine-kv
   storeKind: ClusterSecretStore
   refreshInterval: 1h
-  # Aggregate of env vars the session container needs at startup. The set of
-  # MCP servers wired into the session pod is defined by claude-container/mcp.json
-  # in this repo (baked into the image at build time); those MCP servers
-  # themselves run in-cluster (k8s-mcp-azure/, k8s-mcp-github/) and read their
-  # own credentials from KV via per-server ExternalSecrets, NOT from this
-  # secret. The github-* keys here are unused by the new HTTP MCP path and
-  # can be pruned once the in-container github CLI no longer needs them.
+  # Env vars the session container needs at startup. Session pods envFrom this
+  # Secret. The set of MCP servers wired into the session pod is defined by
+  # claude-container/mcp.json (baked into the image); those MCP servers run
+  # in-cluster (k8s-mcp-azure/, k8s-mcp-github/) and read their own credentials
+  # from KV via per-server ExternalSecrets, NOT from this Secret.
   #
   # Both auth paths are bundled in every pod; the orchestrator stamps
   # TANK_SESSION_MODE on each Deployment to pick which one the bootstrap uses:
@@ -110,15 +108,17 @@ externalSecret:
   #                   bootstrap writes it back to that path so the TUI treats
   #                   the pod as a logged-in subscriber. Populate via
   #                   scripts/setup-claude-credentials.ps1 (or .sh).
+  #
+  # The block is named `githubApp` and the K8s Secret is `github-app-creds`
+  # for legacy reasons — it used to carry the GitHub App private key, until
+  # the App credentials moved to the mcp-github Deployment's own ExternalSecret
+  # (k8s-mcp-github/templates/externalsecret.yaml). Session pods never read
+  # the App credentials directly; mcp-github mints installation tokens itself
+  # and authenticates session-pod → mcp-github via the projected SA token.
+  # Names retained to avoid a multi-step migration; rename when convenient.
   githubApp:
     secretName: github-app-creds
     keys:
-      - envVar: GITHUB_APP_ID
-        kvKey: github-app-id
-      - envVar: GITHUB_APP_INSTALLATION_ID
-        kvKey: github-app-installation-id
-      - envVar: GITHUB_APP_PRIVATE_KEY
-        kvKey: github-app-private-key
       - envVar: ANTHROPIC_API_KEY
         kvKey: anthropic-api-key
   # Claude Code subscription credentials. Lives ONLY in the orchestrator
