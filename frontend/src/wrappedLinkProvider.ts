@@ -1,9 +1,17 @@
 import type { IBufferLine, ILink, ILinkProvider, IBufferCellPosition, Terminal as XTerm } from "@xterm/xterm";
 
-// Match http(s):// or www. URLs without whitespace or the few obvious wrappers.
-// Trailing punctuation handled separately so we don't eat the period at the
-// end of a sentence that contains a URL.
-const URL_REGEX = /(https?:\/\/[^\s<>"'`]+|www\.[^\s<>"'`]+)/gi;
+// Match either a markdown link `[text](url)` or a bare URL. Markdown alternation
+// comes first so a `[text](url)` span is consumed atomically — the URL inside
+// the parens won't double-match as a bare URL on a second pass.
+//
+// Capture groups:
+//   match[1] — URL inside (...) when the markdown alternation matched
+//   match[2] — URL when the bare-URL alternation matched
+//
+// The markdown URL stops at the closing `)`, so it doesn't need the trailing-
+// punctuation trim that bare URLs do (sentence period, closing quote, etc.).
+const LINK_REGEX =
+  /\[[^\]\n]+\]\((https?:\/\/[^\s)]+|www\.[^\s)]+)\)|(https?:\/\/[^\s<>"'`]+|www\.[^\s<>"'`]+)/gi;
 
 // Characters allowed inside a URL body (RFC 3986 reserved + unreserved, minus
 // whitespace and the few brackets we reject for boundary heuristics). Used to
@@ -151,11 +159,17 @@ class WrappedLinkProvider implements ILinkProvider {
     }
 
     const links: ILink[] = [];
-    for (const match of fullText.matchAll(URL_REGEX)) {
-      const trimmed = trimTrailingPunctuation(match[0]);
-      if (!trimmed) continue;
+    for (const match of fullText.matchAll(LINK_REGEX)) {
+      const isMarkdown = match[1] !== undefined;
+      const rawUri = (isMarkdown ? match[1] : match[2]) ?? "";
+      // Markdown URLs stop at `)`; bare URLs need the trailing-punctuation trim.
+      const uri = isMarkdown ? rawUri : trimTrailingPunctuation(rawUri);
+      if (!uri) continue;
+      // For markdown links the clickable span is the whole `[text](url)` form
+      // (anywhere inside it activates); for bare URLs it's the trimmed URL.
+      const span = isMarkdown ? match[0] : uri;
       const startIdx = match.index ?? 0;
-      const endIdx = startIdx + trimmed.length - 1;
+      const endIdx = startIdx + span.length - 1;
       const startPos = charPositions[startIdx];
       const endPos = charPositions[endIdx];
       if (!startPos || !endPos) continue;
@@ -164,11 +178,11 @@ class WrappedLinkProvider implements ILinkProvider {
       // hovered row — otherwise we'd return the same link N times for an
       // N-row wrapped URL.
       if (startPos.y > bufferLineNumber || endPos.y < bufferLineNumber) continue;
-      const uri = trimmed.toLowerCase().startsWith("www.") ? `https://${trimmed}` : trimmed;
+      const href = uri.toLowerCase().startsWith("www.") ? `https://${uri}` : uri;
       links.push({
         range: { start: startPos, end: endPos },
-        text: trimmed,
-        activate: (event) => this.activate(event, uri),
+        text: href,
+        activate: (event) => this.activate(event, href),
       });
     }
     callback(links.length > 0 ? links : undefined);
