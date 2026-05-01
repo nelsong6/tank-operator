@@ -21,11 +21,9 @@
 #                                   pre-approved set of project-level MCP
 #                                   servers (read from /workspace/.mcp.json so
 #                                   it stays correct as the image evolves) +
-#                                   in remote_control mode, a placeholder
-#                                   oauthAccount + remoteDialogSeen so
-#                                   the `/remote-control` slash command
-#                                   clears its local eligibility +
-#                                   first-run-consent gates
+#                                   in remote_control mode, remoteDialogSeen
+#                                   so the `/remote-control` slash command
+#                                   skips its first-run consent prompt
 #   ~/.claude/.credentials.json   — only in subscription mode: a static
 #                                   placeholder blob. The real token is
 #                                   never written to the pod. The
@@ -108,31 +106,28 @@ EOF
     api_key_block="\"customApiKeyResponses\": {\"approved\": [\"${last20}\", \"${last22}\"], \"rejected\": []},"
     ;;
 esac
-# Remote-control mode needs two extra fields in ~/.claude.json that
-# subscription mode does not. `claude remote-control` runs a local
-# eligibility gate before registering the bridge:
-#   if (!r67()?.organizationUuid)
-#     return "Unable to determine your organization for Remote Control eligibility..."
-# r67() reads oauthAccount from ~/.claude.json. Without a placeholder
-# the bridge exits before writing its first [bridge:init] line and the
-# tmux window closes. The api-proxy resolves the real org server-side
-# at POST /v1/environments/bridge from the actor's session token, so
-# the placeholder UUID never reaches platform.claude.com.
-#
-# remoteDialogSeen suppresses the one-time interactive
+# Remote-control mode needs `remoteDialogSeen` in ~/.claude.json to
+# suppress the one-time interactive
 #   "Enable Remote Control? (y/n)"
-# consent prompt that would otherwise block reading from stdin.
-oauth_account_block=''
+# consent prompt that would otherwise block reading from stdin when the
+# bootstrap auto-runs `claude '/remote-control'`.
+#
+# Earlier (cf57df6) we also wrote a placeholder `oauthAccount` with fake
+# UUIDs to satisfy `claude remote-control`'s (bridge mode) startup
+# eligibility check. That placeholder is GONE now: the slash-command
+# path runs its eligibility check synchronously when /remote-control is
+# invoked, and the fake UUIDs caused the command to refuse to launch
+# with "/remote-control isn't available in this environment". Real
+# OAuth bytes flow through the api-proxy's injection, so eligibility
+# resolves against the actor's real org without any local placeholder.
 remote_dialog_block=''
 if [ "${TANK_SESSION_MODE}" = "remote_control" ]; then
-  oauth_account_block='"oauthAccount": {"accountUuid":"00000000-0000-0000-0000-000000000001","emailAddress":"tank@example.invalid","organizationUuid":"00000000-0000-0000-0000-000000000002","displayName":"tank","hasExtraUsageEnabled":false,"billingType":"max","accountCreatedAt":"2024-01-01T00:00:00Z","subscriptionCreatedAt":"2024-01-01T00:00:00Z","ccOnboardingFlags":{},"claudeCodeTrialEndsAt":null,"claudeCodeTrialDurationDays":null,"seatTier":null},'
   remote_dialog_block='"remoteDialogSeen": true,'
 fi
 cat > $HOME/.claude.json <<EOF
 {
   "hasCompletedOnboarding": true,
   ${api_key_block}
-  ${oauth_account_block}
   ${remote_dialog_block}
   "officialMarketplaceAutoInstallAttempted": true,
   "officialMarketplaceAutoInstalled": true,
