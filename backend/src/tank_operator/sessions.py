@@ -11,6 +11,8 @@ from typing import Any, AsyncIterator
 
 from kubernetes_asyncio import client, config
 
+from .exec_proxy import exec_capture
+
 log = logging.getLogger(__name__)
 
 SESSIONS_NAMESPACE = os.environ.get("SESSIONS_NAMESPACE", "tank-operator-sessions")
@@ -62,7 +64,7 @@ class PodNotReady(Exception):
     pass
 
 
-SESSION_MODES = ("api_key", "subscription", "config")
+SESSION_MODES = ("api_key", "subscription", "config", "remote_control")
 DEFAULT_SESSION_MODE = "subscription"
 # Config mode: a one-shot pod the user logs into via `claude /login` to seed
 # the OAuth credentials in KV. Differs from regular sessions in three ways:
@@ -74,6 +76,23 @@ DEFAULT_SESSION_MODE = "subscription"
 # reads ~/.claude/.credentials.json out of the pod via exec and writes it to
 # Key Vault.
 CONFIG_MODE = "config"
+# Remote-control mode: the pod runs `claude remote-control` in a tmux window
+# so the user can drive sessions from claude.ai/code in their browser instead
+# of the in-pod terminal. Otherwise plumbed identically to subscription mode
+# (same hostAliases, same cred placeholder). The CLI prints the bridge URL
+# only via its TUI, so the bootstrap also passes --debug-file and we read
+# the resulting `environment_id=env_XXX` line back via exec to construct
+# https://claude.ai/code?environment=<id>.
+REMOTE_CONTROL_MODE = "remote_control"
+REMOTE_DEBUG_FILE = ".tank/remote-debug.log"
+# `tail -1` not `head -1`: if claude remote-control is restarted inside the
+# pod (or the same debug file is reused across reconnects) a new
+# environment_id line is appended; we want the most recent registration.
+_REMOTE_URL_EXTRACT_CMD = (
+    f'grep -oE "environment_id=env_[A-Za-z0-9]+" '
+    f'"$HOME/{REMOTE_DEBUG_FILE}" 2>/dev/null '
+    f'| tail -1 | cut -d= -f2'
+)
 
 
 @dataclass
@@ -83,6 +102,9 @@ class SessionInfo:
     owner: str
     status: str
     mode: str
+    # Populated only for remote_control sessions once the bridge has
+    # registered; None while we're still waiting for the URL to appear.
+    remote_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -120,6 +142,10 @@ class SessionManager:
         self._oauth_gateway_ip: str | None = None
         # Same idea for the api.anthropic.com proxy — see API_PROXY_HOST.
         self._api_proxy_ip: str | None = None
+        # Cache of remote_control bridge URLs. Avoids exec'ing into the pod
+        # on every list call once the URL is known. Cleared on session
+        # delete; on orchestrator restart we transparently re-discover.
+        self._remote_urls: dict[str, str] = {}
 
     async def startup(self) -> None:
         try:
@@ -353,22 +379,81 @@ class SessionManager:
         return SessionInfo(id=session_id, pod_name=None, owner=owner, status="Pending", mode=mode)
 
     async def list(self, owner: str) -> list[SessionInfo]:
-        assert self._apps is not None
+        assert self._apps is not None and self._core is not None
         owner_label = _owner_label(owner)
-        deployments = await self._apps.list_namespaced_deployment(
+        # Fetch deployments + pods together so we can resolve pod names for
+        # remote-control URL discovery without a 90s wait-for-Ready loop.
+        deployments_task = self._apps.list_namespaced_deployment(
             namespace=SESSIONS_NAMESPACE,
             label_selector=f"tank-operator/owner={owner_label}",
         )
-        return [
-            SessionInfo(
-                id=d.metadata.labels.get("tank-operator/session-id", d.metadata.name),
+        pods_task = self._core.list_namespaced_pod(
+            namespace=SESSIONS_NAMESPACE,
+            label_selector=f"tank-operator/owner={owner_label}",
+        )
+        deployments, pods = await asyncio.gather(deployments_task, pods_task)
+        ready_pods: dict[str, str] = {}
+        for pod in pods.items:
+            session_id = pod.metadata.labels.get("tank-operator/session-id")
+            if session_id and _pod_ready(pod):
+                ready_pods[session_id] = pod.metadata.name
+
+        infos: list[SessionInfo] = []
+        url_lookups: list[tuple[int, str, str]] = []
+        for d in deployments.items:
+            session_id = d.metadata.labels.get(
+                "tank-operator/session-id", d.metadata.name
+            )
+            mode = d.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE)
+            info = SessionInfo(
+                id=session_id,
                 pod_name=None,
                 owner=owner,
                 status=_deployment_status(d),
-                mode=d.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE),
+                mode=mode,
+                remote_url=self._remote_urls.get(session_id) if mode == REMOTE_CONTROL_MODE else None,
             )
-            for d in deployments.items
-        ]
+            infos.append(info)
+            if (
+                mode == REMOTE_CONTROL_MODE
+                and info.remote_url is None
+                and session_id in ready_pods
+            ):
+                url_lookups.append((len(infos) - 1, session_id, ready_pods[session_id]))
+
+        # Resolve any missing remote_control URLs concurrently. Each lookup
+        # is one exec_capture into the pod; cached on success so this only
+        # runs in the brief window between pod-Ready and URL-discovered.
+        if url_lookups:
+            results = await asyncio.gather(
+                *(self._fetch_remote_url(pod_name) for _, _, pod_name in url_lookups),
+                return_exceptions=True,
+            )
+            for (idx, session_id, _), url in zip(url_lookups, results):
+                if isinstance(url, str) and url:
+                    self._remote_urls[session_id] = url
+                    infos[idx].remote_url = url
+        return infos
+
+    async def _fetch_remote_url(self, pod_name: str) -> str | None:
+        """Read the bridge environment_id out of the pod's debug log and
+        format the corresponding claude.ai/code URL. Returns None until
+        `claude remote-control` has registered — typically <1s after the
+        process starts, but the file may not exist yet on the first poll.
+        """
+        try:
+            raw = await exec_capture(
+                SESSIONS_NAMESPACE,
+                pod_name,
+                ["sh", "-c", _REMOTE_URL_EXTRACT_CMD],
+            )
+        except Exception:
+            log.exception("remote-control URL extract failed for pod %s", pod_name)
+            return None
+        env_id = raw.decode(errors="replace").strip()
+        if not env_id.startswith("env_"):
+            return None
+        return f"https://claude.ai/code?environment={env_id}"
 
     async def get_session(self, owner: str, session_id: str) -> SessionInfo:
         """Look up a single session by id, verifying ownership.
@@ -391,12 +476,14 @@ class SessionManager:
             raise
         if deployment.metadata.labels.get("tank-operator/owner") != owner_label:
             raise SessionNotOwned(session_id)
+        mode = deployment.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE)
         return SessionInfo(
             id=session_id,
             pod_name=None,
             owner=owner,
             status=_deployment_status(deployment),
-            mode=deployment.metadata.labels.get("tank-operator/mode", DEFAULT_SESSION_MODE),
+            mode=mode,
+            remote_url=self._remote_urls.get(session_id) if mode == REMOTE_CONTROL_MODE else None,
         )
 
     async def get_pod_name(self, owner: str, session_id: str, timeout: float = 90.0) -> str:
@@ -448,6 +535,7 @@ class SessionManager:
         )
         self._ws_count.pop(session_id, None)
         self._activity.pop(session_id, None)
+        self._remote_urls.pop(session_id, None)
 
     @contextlib.asynccontextmanager
     async def track_ws(self, session_id: str) -> AsyncIterator[None]:
@@ -511,6 +599,7 @@ class SessionManager:
                 continue
             self._ws_count.pop(session_id, None)
             self._activity.pop(session_id, None)
+            self._remote_urls.pop(session_id, None)
 
 
 def _deployment_status(deployment: Any) -> str:
