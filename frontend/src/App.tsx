@@ -32,6 +32,36 @@ interface SessionUser {
   sub: string;
   email: string;
   name: string;
+  // Profile fields from /api/auth/me. Null until the user completes the
+  // GitHub App install. installation_id presence drives the onboarding
+  // wall — null means show the install CTA, non-null means full app.
+  github_login: string | null;
+  installation_id: number | null;
+}
+
+// One-line summaries for the install_error reasons the backend may surface
+// via redirect query param after a failed install callback. Anything not in
+// the map renders as the raw reason — keeps unknown errors visible without
+// hardcoding every variant.
+const INSTALL_ERROR_HINTS: Record<string, string> = {
+  missing_state: "Install link expired before you returned. Try again.",
+  invalid_state: "Install link signature didn't validate. Try again.",
+  missing_installation_id: "GitHub didn't send an installation id. Re-run the install.",
+  pending_approval: "Your install needs an org admin's approval. Once they approve, log in again.",
+  session_expired: "Your session expired during install. Sign in again then re-run the install.",
+  session_invalid: "Your session token didn't validate. Sign in again.",
+  email_mismatch: "The signed-in account doesn't match the install link's email.",
+};
+
+function readInstallError(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("install_error");
+}
+
+function clearInstallError(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("install_error");
+  window.history.replaceState({}, "", url.toString());
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -81,6 +111,47 @@ function initials(user: SessionUser): string {
   const first = parts[0]?.[0] ?? source[0];
   const second = parts[1]?.[0] ?? "";
   return (first + second).toUpperCase().slice(0, 2);
+}
+
+function OnboardingWall({
+  user,
+  onLogout,
+}: {
+  user: SessionUser;
+  onLogout: () => Promise<void>;
+}) {
+  const [installError, setInstallError] = useState<string | null>(readInstallError);
+
+  function dismissError() {
+    setInstallError(null);
+    clearInstallError();
+  }
+
+  return (
+    <div className="welcome">
+      <div className="welcome-inner onboarding">
+        <h2 className="welcome-title">Connect GitHub</h2>
+        <p className="welcome-sub">
+          tank-operator needs the <code>tank-operator</code> GitHub App installed on your account so
+          your sessions can read and write your repos via mcp-github.
+        </p>
+        {installError && (
+          <pre className="error onboarding-error" onClick={dismissError} title="dismiss">
+            {INSTALL_ERROR_HINTS[installError] ?? installError}
+          </pre>
+        )}
+        <a className="btn-primary onboarding-cta" href="/api/github/install/url">
+          Install GitHub App
+        </a>
+        <p className="onboarding-meta">
+          Signed in as <strong>{user.email}</strong>.{" "}
+          <button className="link-button" onClick={onLogout}>
+            sign out
+          </button>
+        </p>
+      </div>
+    </div>
+  );
 }
 
 export function App() {
@@ -278,6 +349,10 @@ export function App() {
 
   if (!user) {
     return <div className="boot-state"><span className="boot-text">signing in…</span></div>;
+  }
+
+  if (user.installation_id == null) {
+    return <OnboardingWall user={user} onLogout={logout} />;
   }
 
   return (

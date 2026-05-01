@@ -713,6 +713,51 @@ button:disabled {
   line-height: 1.4;
 }
 
+/* Onboarding wall — shown when /api/auth/me returns installation_id=null
+   (#57 stage 2). Reuses the welcome layout for the centered presentation
+   and adds a primary CTA + a click-to-dismiss error pill. */
+.welcome-inner.onboarding { gap: var(--space-3); max-width: 28rem; }
+
+.welcome-inner.onboarding code {
+  background: var(--gray-850);
+  padding: 0.05rem var(--space-1);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.onboarding-cta {
+  display: inline-block;
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  text-decoration: none;
+  text-align: center;
+}
+
+.onboarding-error {
+  cursor: pointer;
+  user-select: none;
+  margin: 0;
+}
+.onboarding-error:hover { opacity: 0.85; }
+
+.onboarding-meta {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin: var(--space-3) 0 0;
+}
+
+.link-button {
+  background: transparent;
+  color: var(--accent-fg);
+  padding: 0;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-button:hover { color: var(--text-primary); }
+
 /* Tabs --------------------------------------------------------------------- */
 
 .tab-bar {

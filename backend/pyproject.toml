@@ -16,6 +16,10 @@ dependencies = [
   # vars and SA-token file).
   "azure-identity>=1.19",
   "azure-keyvault-secrets>=4.9",
+  # Per-user profile storage in Cosmos DB (#57). Same workload-identity
+  # auth path as the KV writer above; the orchestrator UAMI carries both
+  # role assignments. async client (azure.cosmos.aio).
+  "azure-cosmos>=4.7",
 ]
 
 [build-system]

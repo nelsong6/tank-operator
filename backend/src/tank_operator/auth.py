@@ -43,6 +43,54 @@ COOKIE_NAME = "auth_token"
 ALGORITHM_HS = "HS256"
 ALGORITHM_RS = "RS256"
 
+# Short-lived JWT used as the OAuth-style `state` parameter on GitHub App
+# install redirects (#57 stage 2). Bound to the caller's email and a custom
+# audience so it can't be cross-used as a session token. 10-minute window
+# is enough for "click install → grant on GitHub → redirect back" without
+# leaving a stale token usable on a future install attempt.
+INSTALL_STATE_TTL_SECONDS = 10 * 60
+INSTALL_STATE_AUDIENCE = "tank-operator/github-install"
+
+
+def mint_install_state(email: str) -> str:
+    """Sign a short-lived state token binding the install flow to `email`.
+
+    Verified in /api/github/install/callback to reject installs that didn't
+    originate from a session we just minted state for.
+    """
+    if not JWT_SECRET:
+        raise HTTPException(status_code=500, detail="JWT_SECRET not configured")
+    now = int(time.time())
+    return jwt.encode(
+        {
+            "email": email.lower(),
+            "aud": INSTALL_STATE_AUDIENCE,
+            "iat": now,
+            "exp": now + INSTALL_STATE_TTL_SECONDS,
+        },
+        JWT_SECRET,
+        algorithm=ALGORITHM_HS,
+    )
+
+
+def verify_install_state(state: str) -> str:
+    """Verify an install-state token and return the email it was minted for."""
+    if not JWT_SECRET:
+        raise HTTPException(status_code=500, detail="JWT_SECRET not configured")
+    try:
+        payload = jwt.decode(
+            state,
+            JWT_SECRET,
+            algorithms=[ALGORITHM_HS],
+            audience=INSTALL_STATE_AUDIENCE,
+        )
+    except jwt.PyJWTError as e:
+        raise HTTPException(status_code=400, detail=f"invalid install state: {e}") from e
+    email = str(payload.get("email", "")).lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="install state has no email")
+    return email
+
 
 @dataclass
 class User:
