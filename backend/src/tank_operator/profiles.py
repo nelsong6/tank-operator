@@ -109,27 +109,40 @@ class ProfileStore:
         Called on /api/auth/microsoft/login so a profile row exists before
         any feature that needs one (install callback, multi-tenant
         mcp-github) tries to read it.
+
+        Soft-fails on any Cosmos error — auth, network, role-propagation
+        lag, account-not-yet-provisioned. Login is hard-coupled to this
+        method; raising here means a Cosmos hiccup logs every user out.
+        Returning a stub Profile means installation_id reads as null
+        downstream (SPA shows the install wall regardless), but the
+        session JWT is minted and the user is in.
         """
         normalized = email.lower()
         if not self._enabled or self._container is None:
             return Profile(email=normalized)
         try:
-            doc = await self._container.read_item(
-                item=normalized, partition_key=normalized
+            try:
+                doc = await self._container.read_item(
+                    item=normalized, partition_key=normalized
+                )
+                return _profile_from_doc(doc)
+            except CosmosResourceNotFoundError:
+                now = _now_iso()
+                doc = {
+                    "id": normalized,
+                    "email": normalized,
+                    "github_login": None,
+                    "installation_id": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                await self._container.create_item(body=doc)
+                return _profile_from_doc(doc)
+        except Exception:
+            log.exception(
+                "Cosmos profile lookup failed for %s; returning stub", normalized
             )
-            return _profile_from_doc(doc)
-        except CosmosResourceNotFoundError:
-            now = _now_iso()
-            doc = {
-                "id": normalized,
-                "email": normalized,
-                "github_login": None,
-                "installation_id": None,
-                "created_at": now,
-                "updated_at": now,
-            }
-            await self._container.create_item(body=doc)
-            return _profile_from_doc(doc)
+            return Profile(email=normalized)
 
     async def get(self, email: str) -> Profile:
         """Return the profile for `email`. Equivalent to get_or_create today;
@@ -148,6 +161,11 @@ class ProfileStore:
         Tolerates a missing row — if the user hits the callback without a
         prior login (stale tab, manual URL), we create the profile rather
         than 500. The state JWT verified by the caller is the auth anchor.
+
+        Stays fail-loud on Cosmos errors (vs. get_or_create's soft-fail):
+        if the install callback can't write installation_id, surfacing the
+        failure to the user so they retry is better than silently dropping
+        their install state.
         """
         normalized = email.lower()
         if not self._enabled or self._container is None:
