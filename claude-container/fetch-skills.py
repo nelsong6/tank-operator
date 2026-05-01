@@ -27,7 +27,7 @@ SKILLS_DIR = os.path.expanduser("~/.claude/skills")
 # The dest-skill-name is the directory under ~/.claude/skills/; claude
 # Code discovers SKILL.md inside it.
 SKILLS = [
-    ("nelsong6", "shell-config-profile-1", "claude/skills/done/SKILL.md", "done"),
+    ("nelsong6", "tank-operator", "claude-container/skills/done/SKILL.md", "done"),
 ]
 
 
