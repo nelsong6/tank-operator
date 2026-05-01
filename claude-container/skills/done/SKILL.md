@@ -1,7 +1,6 @@
 ---
 name: done
 description: Review the session, capture intent and decisions as a GitHub issue, audit auto-memory and docs
-disable-model-invocation: true
 ---
 
 # /done — Finalize a session
