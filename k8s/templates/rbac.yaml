@@ -32,7 +32,7 @@ subjects:
     namespace: {{ .Values.namespaces.orchestrator }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: RoleBinding
+  kind: Role
   name: tank-operator-sessions-mgr
 ---
 # Session SA gets cluster-admin so an in-cluster Claude session can act on
