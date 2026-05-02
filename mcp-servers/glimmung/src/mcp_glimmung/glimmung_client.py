@@ -50,3 +50,8 @@ class GlimmungClient:
         r = self._http.patch(self._base_url + path, json=json, headers=self._headers())
         r.raise_for_status()
         return r.json()
+
+    def post(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        r = self._http.post(self._base_url + path, params=params, headers=self._headers())
+        r.raise_for_status()
+        return r.json()
