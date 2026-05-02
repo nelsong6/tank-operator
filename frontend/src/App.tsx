@@ -317,6 +317,33 @@ export function App() {
     }
   }
 
+  async function clearSession(id: string) {
+    const existing = sessions.find((s) => s.id === id);
+    if (!existing) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const delRes = await authedFetch(`/api/sessions/${id}`, { method: "DELETE" });
+      if (!delRes.ok) throw new Error(`delete failed: ${delRes.status}`);
+      const createRes = await authedFetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: existing.mode }),
+      });
+      if (!createRes.ok) throw new Error(`create failed: ${createRes.status}`);
+      const created: Session = await createRes.json();
+      if (existing.name) {
+        await renameSession(created.id, existing.name);
+      }
+      await refresh();
+      activate(created.id);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function startRemoteControl(id: string) {
     // \r is what the terminal would send for the Enter key, so claude
     // submits the line. Slash commands are evaluated client-side by the
@@ -466,6 +493,14 @@ export function App() {
                       save
                     </button>
                   )}
+                  <button
+                    className="session-action"
+                    onClick={(e) => { e.stopPropagation(); clearSession(s.id); }}
+                    disabled={busy}
+                    title="delete this pod and replace it with a fresh one"
+                  >
+                    clear
+                  </button>
                   <button
                     className="session-delete"
                     onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
