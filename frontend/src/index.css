@@ -42,9 +42,9 @@
   --bg-app: #171717;
   --bg-sidebar: rgba(13, 13, 13, 0.7);
   --bg-elevated: var(--gray-850);
-  --bg-hover: var(--gray-950);
+  --bg-hover: rgba(255, 255, 255, 0.06);
   --bg-hover-soft: rgba(255, 255, 255, 0.05);
-  --bg-active: var(--gray-900);
+  --bg-active: var(--bg-hover);
 
   /* Borders */
   --border-subtle: rgba(38, 38, 38, 0.3);
@@ -57,36 +57,37 @@
   --text-muted: var(--gray-400);
   --text-faint: var(--gray-500);
 
-  /* Accents */
-  --accent: #3b82f6;
-  --accent-soft: rgba(56, 189, 248, 0.15);
-  --accent-fg: #bae6fd;
-  --unread: #0ea5e9;
+  /* Accents — unified hue. accent + accent-soft + subscription chip share the
+     same blue at different intensities. Cyan stays reserved for remote-control. */
+  --accent: #4f8cf7;
+  --accent-soft: rgba(79, 140, 247, 0.14);
+  --accent-fg: #b9d2fb;
+  --unread: #4f8cf7;
 
-  /* Remote-control cyan — third accent, reserved for the live-link affordance
-     on subscription tabs. Matches the cyan tone of the subscription mode chip
-     but used at higher saturation for active-action states. */
+  /* Remote-control cyan — third accent, reserved for the live-link affordance. */
   --cyan: #67e8f9;
   --cyan-bright: #a5f3fc;
   --cyan-bg: rgba(34, 211, 238, 0.12);
   --cyan-border: rgba(34, 211, 238, 0.45);
 
   /* Semantic statuses */
-  --status-online: #22c55e;
-  --status-online-bg: rgba(34, 197, 94, 0.12);
-  --status-online-border: rgba(34, 197, 94, 0.45);
-  --status-error-bg: rgba(239, 68, 68, 0.12);
-  --status-error-fg: #f87171;
+  --status-online: #34d399;
+  --status-online-bg: rgba(52, 211, 153, 0.12);
+  --status-online-border: rgba(52, 211, 153, 0.45);
+  --status-error-bg: rgba(239, 111, 111, 0.12);
+  --status-error-fg: #ef6f6f;
   --status-pending-bg: var(--gray-850);
   --status-pending-fg: var(--gray-400);
 
-  /* Mode chips (auth modes) */
+  /* Mode chips (auth modes). subscription rides the unified accent; api-key
+     uses muted lavender; config-sub uses warm clay — distinct without the
+     candy-pink consumer warmth of the previous palette. */
   --mode-subscription-bg: var(--accent-soft);
   --mode-subscription-fg: var(--accent-fg);
-  --mode-api-key-bg: rgba(168, 85, 247, 0.12);
-  --mode-api-key-fg: #d8b4fe;
-  --mode-config-bg: rgba(244, 114, 182, 0.12);
-  --mode-config-fg: #f9a8d4;
+  --mode-api-key-bg: rgba(159, 122, 234, 0.12);
+  --mode-api-key-fg: #c8b6f5;
+  --mode-config-bg: rgba(217, 119, 87, 0.12);
+  --mode-config-fg: #e6b59a;
 
   /* Radii */
   --radius-sm: 0.375rem;
@@ -248,12 +249,6 @@ button:disabled {
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) calc(var(--space-2) + 0.0625rem) var(--space-1);
-  flex-shrink: 0;
-}
-
-.brand-mark {
-  display: inline-flex;
-  color: var(--text-primary);
   flex-shrink: 0;
 }
 
@@ -456,8 +451,9 @@ button:disabled {
   gap: 0.125rem;
 }
 
-/* Chat-row geometry from ChatItem.svelte:448 — px-[11px] py-[6px], rounded-xl,
-   hover DARKER than surface, active/open LIGHTER than surface. */
+/* Chat-row geometry from ChatItem.svelte:448 — px-[11px] py-[6px], rounded-xl.
+   Hover and open share a white-wash background; open is distinguished by a
+   brighter inset border + a 2px accent-blue left stripe. */
 .sessions li {
   display: flex;
   align-items: center;
@@ -466,11 +462,18 @@ button:disabled {
   border-radius: var(--radius-lg);
   padding: 6px 11px;
   min-height: 32px;
-  transition: background 120ms ease;
+  transition: background 120ms ease, box-shadow 120ms ease;
 }
 
-.sessions li:hover { background: var(--bg-hover); }
-.sessions li.is-open { background: var(--bg-active); }
+.sessions li:hover {
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+
+.sessions li.is-open {
+  background: var(--bg-active);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18), inset 2px 0 0 var(--accent-fg);
+}
 
 .session-open {
   background: transparent;
@@ -480,8 +483,8 @@ button:disabled {
   gap: var(--space-2);
   text-align: left;
   padding: 0;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  font-family: var(--font-primary);
+  font-size: 13px;
   min-width: 0;
   border-radius: 0;
   color: var(--text-secondary);
@@ -509,27 +512,6 @@ button:disabled {
 .session-delete:hover:not(:disabled) {
   background: var(--gray-850);
   color: var(--text-primary);
-}
-
-.session-remote-link {
-  padding: var(--space-1);
-  color: var(--cyan);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  flex-shrink: 0;
-  text-decoration: none;
-}
-
-.session-remote-link:hover:not(.is-pending) {
-  background: var(--cyan-bg);
-  color: var(--cyan-bright);
-}
-
-.session-remote-link.is-pending {
-  color: var(--text-faint);
-  cursor: default;
 }
 
 .sessions-empty {
@@ -791,112 +773,44 @@ button:disabled {
 }
 .link-button:hover { color: var(--text-primary); }
 
-/* Tabs --------------------------------------------------------------------- */
+/* Inline session-row actions ------------------------------------------------
+ * The top tab bar is gone — sidebar is the only session switcher. Per-session
+ * actions (`Remote control` for subscription, `save credentials` for config)
+ * render inline next to the chips, gated on status === Active. They follow the
+ * tinted-chip vocabulary: soft tinted background, no harsh border, hover
+ * deepens the tint. Cyan stays reserved for remote-control. */
 
-.tab-bar {
-  display: flex;
-  background: var(--bg-app);
-  overflow-x: auto;
-  padding: var(--space-2) var(--space-2) 0;
-  gap: 2px;
-  border-bottom: 1px solid var(--border-subtle);
-  scrollbar-width: thin;
-  scrollbar-color: var(--gray-800) transparent;
-}
-
-.tab-bar::-webkit-scrollbar { height: 4px; }
-.tab-bar::-webkit-scrollbar-thumb { background: var(--gray-800); border-radius: 999px; }
-.tab-bar::-webkit-scrollbar-track { background: transparent; }
-
-.tab {
-  display: flex;
-  align-items: center;
-  background: transparent;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+.session-action {
+  background: var(--accent-soft);
+  color: var(--accent-fg);
+  font-family: var(--font-primary);
+  font-size: 10px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  padding: 0.05rem var(--space-2);
+  border-radius: var(--radius-md);
   flex-shrink: 0;
-  transition: background var(--motion-fast) var(--ease-out), color var(--motion-fast) ease;
 }
+.session-action:hover:not(:disabled) { background: rgba(79, 140, 247, 0.22); }
+.session-action:disabled { opacity: 0.4; cursor: default; }
 
-.tab:hover:not(.active) { background: var(--bg-hover); }
-.tab.active { background: var(--bg-active); }
+.session-action.session-remote { background: var(--cyan-bg); color: var(--cyan); }
+.session-action.session-remote:hover:not(:disabled) { background: rgba(34, 211, 238, 0.22); color: var(--cyan-bright); }
 
-.tab-label {
+/* Inline rename input — replaces the session-id span on double-click. */
+.session-name-input {
+  flex: 1;
   background: transparent;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  border-radius: 0;
-}
-
-.tab.active .tab-label { color: var(--text-primary); }
-
-.tab-name-input {
-  background: transparent;
-  border: 1px solid var(--gray-600);
+  border: 1px solid var(--gray-700);
   border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-2);
-  margin: var(--space-1) var(--space-2);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  padding: 1px var(--space-2);
+  font-family: var(--font-primary);
+  font-size: 13px;
   color: var(--text-primary);
   min-width: 0;
   outline: none;
 }
-.tab-name-input:focus { border-color: var(--accent, var(--gray-500)); }
-
-.tab-close {
-  padding: var(--space-1) var(--space-2);
-  color: var(--text-faint);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-  margin-right: 4px;
-}
-
-.tab-close:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--gray-850);
-}
-
-.tab-action {
-  background: transparent;
-  color: var(--status-online);
-  border: 1px solid var(--status-online-border);
-  padding: 0.15rem var(--space-2);
-  margin: 0 var(--space-2);
-  font-size: var(--text-xs);
-  font-family: inherit;
-  border-radius: var(--radius-md);
-  cursor: pointer;
-}
-
-.tab-action:hover:not(:disabled) { background: var(--status-online-bg); }
-.tab-action:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* Remote-control variant of the tab-bar action: cyan to match its mode chip,
-   and the link form gets an external-link affordance. The .is-pending
-   span variant looks like a disabled button without the disabled cursor. */
-.tab-action-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--cyan);
-  border-color: var(--cyan-border);
-  text-decoration: none;
-}
-
-.tab-action-link:hover { background: var(--cyan-bg); }
-
-.tab-action.is-pending {
-  color: var(--text-faint);
-  border-color: var(--gray-800);
-  cursor: default;
-}
+.session-name-input:focus { border-color: var(--accent); }
 
 .terminals {
   flex: 1;

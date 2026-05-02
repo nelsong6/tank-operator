@@ -105,20 +105,6 @@ function IconClose() {
   );
 }
 
-function BrandMark() {
-  return (
-    <svg viewBox="0 0 64 64" width="18" height="18" fill="none"
-         stroke="currentColor" strokeWidth="2.5"
-         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="8" y="28" width="40" height="14" rx="3" />
-      <circle cx="16" cy="46" r="5" />
-      <circle cx="40" cy="46" r="5" />
-      <line x1="48" y1="32" x2="58" y2="32" />
-      <rect x="22" y="20" width="14" height="8" rx="1.5" />
-    </svg>
-  );
-}
-
 function initials(user: SessionUser): string {
   const source = (user.name || user.email || "?").trim();
   const parts = source.split(/[\s@._-]+/).filter(Boolean);
@@ -174,17 +160,21 @@ export function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [tabs, setTabs] = useState<string[]>([]);
   const [active, setActive] = useState<string | null>(null);
+  // Sessions whose Terminal stays mounted (so the WS keeps draining and
+  // scrollback survives switching). A session is mounted the first time it
+  // becomes active and unmounts only on deletion. Sessions you haven't
+  // touched don't open a WS — same opt-in semantic the old tab list had.
+  const [mounted, setMounted] = useState<Set<string>>(() => new Set());
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  // Inline rename state. `editingTab` is the session id whose tab label is
-  // currently an <input>; `editingValue` holds the in-progress name. Reset
-  // when commit or cancel fires.
-  const [editingTab, setEditingTab] = useState<string | null>(null);
+  // Inline rename state. `editingId` is the session whose row is currently
+  // an <input>; `editingValue` holds the in-progress name. Reset on commit
+  // or cancel. Triggered by double-click on the session-id span.
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState("");
-  // One Terminal handle per open tab — populated by Terminal's forwardRef
-  // callback. Used by the "Remote control" tab-bar button to inject the
+  // One Terminal handle per session — populated by Terminal's forwardRef
+  // callback. Used by the inline "remote control" button to inject the
   // /remote-control slash command into the live WS.
   const terminalRefs = useRef<Map<string, TerminalHandle>>(new Map());
 
@@ -227,35 +217,31 @@ export function App() {
 
   useEffect(() => {
     if (!user) return;
-    const hasPending = tabs.some((id) => {
-      const s = sessions.find((x) => x.id === id);
-      return !s || s.status !== "Active";
-    });
+    const hasPending = sessions.some((s) => s.status !== "Active");
     if (!hasPending) return;
     const t = setInterval(refresh, POLL_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [tabs, sessions, user]);
+  }, [sessions, user]);
 
   useEffect(() => {
-    setTabs((prev) => {
-      const next = prev.filter((id) => sessions.some((s) => s.id === id));
-      if (next.length === prev.length) return prev;
-      if (active && !next.includes(active)) setActive(next[next.length - 1] ?? null);
-      return next;
+    if (active && !sessions.some((s) => s.id === active)) {
+      setActive(sessions[sessions.length - 1]?.id ?? null);
+    }
+    // Drop any mounted ids that no longer exist in the sessions list.
+    setMounted((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (sessions.some((s) => s.id === id)) next.add(id);
+        else changed = true;
+      });
+      return changed ? next : prev;
     });
-  }, [sessions]);
+  }, [sessions, active]);
 
-  function openTab(id: string) {
-    setTabs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  function activate(id: string) {
     setActive(id);
-  }
-
-  function closeTab(id: string) {
-    setTabs((prev) => {
-      const next = prev.filter((x) => x !== id);
-      if (active === id) setActive(next[next.length - 1] ?? null);
-      return next;
-    });
+    setMounted((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
   }
 
   async function createSession(mode: SessionMode = "subscription") {
@@ -271,7 +257,7 @@ export function App() {
       if (!res.ok) throw new Error(`create failed: ${res.status}`);
       const created: Session = await res.json();
       await refresh();
-      openTab(created.id);
+      activate(created.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -297,21 +283,21 @@ export function App() {
   }
 
   function startEditing(id: string, current: string | null) {
-    setEditingTab(id);
+    setEditingId(id);
     setEditingValue(current ?? "");
   }
 
   function commitEditing() {
-    if (editingTab) {
+    if (editingId) {
       const trimmed = editingValue.trim();
-      void renameSession(editingTab, trimmed === "" ? null : trimmed);
+      void renameSession(editingId, trimmed === "" ? null : trimmed);
     }
-    setEditingTab(null);
+    setEditingId(null);
     setEditingValue("");
   }
 
   function cancelEditing() {
-    setEditingTab(null);
+    setEditingId(null);
     setEditingValue("");
   }
 
@@ -319,7 +305,12 @@ export function App() {
     try {
       const res = await authedFetch(`/api/sessions/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`delete failed: ${res.status}`);
-      closeTab(id);
+      if (active === id) {
+        setActive((prev) => {
+          const remaining = sessions.filter((s) => s.id !== id);
+          return prev === id ? (remaining[remaining.length - 1]?.id ?? null) : prev;
+        });
+      }
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -373,7 +364,6 @@ export function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden="true"><BrandMark /></span>
           <h1>tank-operator</h1>
         </div>
 
@@ -419,17 +409,63 @@ export function App() {
           <ul className="sessions">
             {sessions.length === 0 && <li className="sessions-empty">no sessions</li>}
             {sessions.map((s) => {
-              const isOpen = tabs.includes(s.id);
+              const isActive = active === s.id;
+              const isEditing = editingId === s.id;
+              const isLive = s.status === "Active";
               return (
-                <li key={s.id} className={isOpen ? "is-open" : ""}>
-                  <button className="session-open" onClick={() => openTab(s.id)} title={s.id}>
-                    <span className="session-id">{s.name ?? s.id}</span>
-                    <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
-                    <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
-                  </button>
+                <li key={s.id} className={isActive ? "is-open" : ""}>
+                  {isEditing ? (
+                    <div className="session-open">
+                      <input
+                        className="session-name-input"
+                        value={editingValue}
+                        autoFocus
+                        onChange={(e) => setEditingValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") commitEditing();
+                          else if (e.key === "Escape") cancelEditing();
+                        }}
+                        onBlur={commitEditing}
+                        placeholder={s.id}
+                        maxLength={80}
+                      />
+                      <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
+                      <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
+                    </div>
+                  ) : (
+                    <button
+                      className="session-open"
+                      onClick={() => activate(s.id)}
+                      onDoubleClick={() => startEditing(s.id, s.name)}
+                      title={s.name ? `${s.id} — double-click to rename` : "double-click to rename"}
+                    >
+                      <span className="session-id">{s.name ?? s.id}</span>
+                      <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
+                      <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
+                    </button>
+                  )}
+                  {s.mode === "subscription" && isLive && (
+                    <button
+                      className="session-action session-remote"
+                      onClick={(e) => { e.stopPropagation(); startRemoteControl(s.id); }}
+                      title="type /remote-control into this session — claude will print a https://claude.ai/code/session_… URL you can open"
+                    >
+                      remote
+                    </button>
+                  )}
+                  {s.mode === "config" && (
+                    <button
+                      className="session-action"
+                      onClick={(e) => { e.stopPropagation(); saveCredentials(s.id); }}
+                      disabled={busy || !isLive}
+                      title="capture ~/.claude/.credentials.json from this pod and write it to KV"
+                    >
+                      save
+                    </button>
+                  )}
                   <button
                     className="session-delete"
-                    onClick={() => deleteSession(s.id)}
+                    onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
                     title="delete session"
                     aria-label="delete session"
                   >
@@ -469,7 +505,7 @@ export function App() {
       </aside>
 
       <main className="workspace">
-        {tabs.length === 0 ? (
+        {active == null ? (
           <div className="welcome">
             <div className="welcome-inner">
               <h2 className="welcome-title">tank-operator</h2>
@@ -491,92 +527,22 @@ export function App() {
             </div>
           </div>
         ) : (
-          <>
-            <nav className="tab-bar">
-              {tabs.map((id) => {
-                const s = sessions.find((x) => x.id === id);
-                const status = s?.status ?? "Pending";
-                const isConfig = s?.mode === "config";
-                const isSubscription = s?.mode === "subscription";
-                const displayName = s?.name ?? id;
-                const isEditing = editingTab === id;
-                return (
-                  <div key={id} className={`tab ${active === id ? "active" : ""}`}>
-                    {isEditing ? (
-                      <input
-                        className="tab-name-input"
-                        value={editingValue}
-                        autoFocus
-                        onChange={(e) => setEditingValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitEditing();
-                          else if (e.key === "Escape") cancelEditing();
-                        }}
-                        onBlur={commitEditing}
-                        placeholder={id}
-                        maxLength={80}
-                      />
-                    ) : (
-                      <button
-                        className="tab-label"
-                        onClick={() => setActive(id)}
-                        onDoubleClick={() => startEditing(id, s?.name ?? null)}
-                        title={s?.name ? `${id} — double-click to rename` : "double-click to rename"}
-                      >
-                        <span className="id">{displayName}</span>
-                        <span className={`status status-${status.toLowerCase()}`}>{status}</span>
-                      </button>
-                    )}
-                    {isConfig && (
-                      <button
-                        className="tab-action"
-                        onClick={() => saveCredentials(id)}
-                        disabled={busy || status !== "Active"}
-                        title="capture ~/.claude/.credentials.json from this pod and write it to KV"
-                      >
-                        save credentials
-                      </button>
-                    )}
-                    {isSubscription && (
-                      <button
-                        className="tab-action"
-                        onClick={() => startRemoteControl(id)}
-                        disabled={status !== "Active"}
-                        title="type /remote-control into this session — claude will print a https://claude.ai/code/session_… URL you can open"
-                      >
-                        Remote control
-                      </button>
-                    )}
-                    <button
-                      className="tab-close"
-                      onClick={() => closeTab(id)}
-                      title="close tab (session keeps running)"
-                      aria-label="close tab"
-                    >
-                      <IconClose />
-                    </button>
-                  </div>
-                );
-              })}
-            </nav>
-            <div className="terminals">
-              {tabs.map((id) => {
-                const s = sessions.find((x) => x.id === id);
-                return (
-                  <Terminal
-                    key={id}
-                    ref={(h) => {
-                      if (h) terminalRefs.current.set(id, h);
-                      else terminalRefs.current.delete(id);
-                    }}
-                    sessionId={id}
-                    status={s?.status ?? "Pending"}
-                    visible={active === id}
-                  />
-                );
-              })}
-            </div>
-          </>
+          <div className="terminals">
+            {sessions
+              .filter((s) => mounted.has(s.id))
+              .map((s) => (
+                <Terminal
+                  key={s.id}
+                  ref={(h) => {
+                    if (h) terminalRefs.current.set(s.id, h);
+                    else terminalRefs.current.delete(s.id);
+                  }}
+                  sessionId={s.id}
+                  status={s.status}
+                  visible={active === s.id}
+                />
+              ))}
+          </div>
         )}
       </main>
     </div>

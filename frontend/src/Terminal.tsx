@@ -18,9 +18,9 @@ interface Props {
 
 /**
  * Imperative handle the parent uses to push input into the live WS — used by
- * the "Remote control" tab-bar button to send "/remote-control\r" without
- * the user having to focus the terminal and type. No-op if the WS isn't open
- * yet (the button is disabled until status === "Active" anyway).
+ * the inline "remote" affordance on the sidebar session row to send
+ * "/remote-control\r" without the user having to focus the terminal and type.
+ * No-op if the WS isn't open yet (the button only renders for Active sessions).
  */
 export interface TerminalHandle {
   sendInput: (s: string) => void;
