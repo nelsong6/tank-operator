@@ -462,6 +462,7 @@ button:disabled {
   border-radius: var(--radius-lg);
   padding: 6px 11px;
   min-height: 32px;
+  cursor: pointer;
   transition: background 120ms ease, box-shadow 120ms ease;
 }
 
@@ -523,6 +524,7 @@ button:disabled {
   font-style: italic;
 }
 
+.sessions-empty { cursor: default; }
 .sessions-empty:hover { background: transparent; }
 
 /* Status / mode chips ------------------------------------------------------- */
