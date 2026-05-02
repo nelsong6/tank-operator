@@ -32,6 +32,8 @@ The browser xterm.js terminal is *the* route, not a demo surface. SSH / VS Code 
 - `current_user` re-checks the email against `ALLOWED_EMAIL` on every protected endpoint, so revoking access only needs a tofu apply, not a token rotation.
 - No oauth2-proxy. Session pods authenticate to in-cluster MCP servers via the projected SA token (read fresh per request by the `mcp-auth-proxy` sidecar in each session pod); MCP servers do Azure work via their dedicated UAMIs.
 
+**GitHub App install flow (#57 stage 2).** When `/api/auth/me` returns `installation_id=null`, the SPA renders an onboarding wall (`frontend/src/App.tsx → OnboardingWall`) instead of the main shell. Clicking the install CTA hits `/api/github/install/url`, which mints a 10-min state JWT (custom audience `tank-operator/github-install`) bound to the caller's email and 302s to `https://github.com/apps/<github.appSlug>/installations/new?state=...`. After GitHub install consent, GitHub redirects to `/api/github/install/callback`; the callback validates *both* the state JWT and the caller's `auth_token` cookie agree on email (defense-in-depth against a phishing flow where an attacker tricks a victim into installing under the attacker's profile), then upserts `installation_id` on the Cosmos profile row and 302s back to `/`. Validation failures redirect to `/?install_error=<reason>` for an SPA banner. The user-facing App lives at `https://github.com/apps/tank-operator-romaine-life` (`tank-operator` slug was taken globally on github.com) — `github.appSlug` in `k8s/values.yaml` carries the actual slug.
+
 ## In-cluster MCP servers
 
 `mcp-servers/<name>/` (Python source) + `k8s-mcp-<name>/` (Helm chart with `kube-rbac-proxy` sidecar). Inbound auth: claude-session SA token validated via TokenReview + SubjectAccessReview against the synthetic `mcp.tank-operator.io/servers/<name>` resource. Currently:
@@ -40,6 +42,8 @@ The browser xterm.js terminal is *the* route, not a demo surface. SSH / VS Code 
 - `mcp-github` — custom GitHub-App-backed
 - `mcp-k8s` — read-only kubectl/helm
 - `mcp-argocd` — read-only ArgoCD via Dex SA-token exchange (no static API tokens)
+
+**Two GitHub Apps live alongside each other.** `romaine-life-app` is the host's dev/automation bot — it authors PRs from session pods, runs cluster-side automation, etc. The user-facing App is `tank-operator-romaine-life`, intended for friends to install on their own accounts; its credentials live in KV under `tank-operator-app-*`. Today `mcp-github` reads only romaine-life-app's keys (`GITHUB_APP_*` env via `k8s-mcp-github`'s ExternalSecret) and mints every session-pod token from that single installation — multi-user is *configured* (Cosmos profiles, install flow, slug) but not yet *routed*. Stage 3 of #57 is the swap: mcp-github reads `tank-operator-app-*` keys instead, looks up `installation_id` per inbound caller from the Cosmos profile, and falls back to the host's installation (downscoped) when a non-host user touches host-owned repos. Until that lands, session-pod GitHub writes are all attributed to `romaine-life-app[bot]` on host's repos regardless of caller.
 
 ### mcp-github write surface: no caller-provided SHAs
 
