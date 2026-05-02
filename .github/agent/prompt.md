@@ -17,6 +17,23 @@ issue described below and produce a coherent commit on the agent branch.
    commits and pushes the branch when you finish; if you produce no
    changes, the job will fail and the PR will not open.
 
+## Styleguide maintenance is mandatory
+
+Tank-operator exposes `/_styleguide` as a visual catalog of every
+component the React frontend ships (buttons, status dots, mode chips,
+session row, dropdown, welcome card, error pill). The contract —
+`nelsong6/glimmung/docs/styleguide-contract.md` — is that **whenever
+you change a component, you must update its entry in the styleguide in
+the same change**. The page lives at `frontend/src/StyleguideView.tsx`
+and is mounted by `main.tsx` at `/_styleguide`; if you add a new
+component (a new button voice, a new pill, a new card layout), add a
+section rendering it in every state it supports.
+
+Don't ship a component change without the styleguide change. There's no
+automated drift check — the env-prep phase's `/_styleguide` curl is the
+floor that catches "the route doesn't even render anymore", not "the
+styleguide drifted from the live UI."
+
 ## Constraints
 
 - Do **not** modify `.github/workflows/`, `.github/agent/`, or `.mcp.json`

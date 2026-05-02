@@ -1,0 +1,169 @@
+name: Issue Agent — env-prep
+
+run-name: "#${{ inputs.issue_number }} env-prep ${{ inputs.issue_title }} (${{ inputs.host }})"
+
+# Phase 1 of the multi-phase issue-agent pipeline (glimmung#102 pattern,
+# tank-operator rollout).
+#
+# Tank-operator doesn't spin up a per-issue validation env — the live
+# operator.romaine.life deploy is what the agent runs against (and what
+# the agent itself runs *on*). So env-prep here is a guard, not a build:
+# verify the live app's /_styleguide contract before any agent tokens
+# spend. A 404 means main is shipping a broken UI surface; abort the
+# run so the operator can fix the floor before agents run on top of it.
+#
+# Emits validation_url as a phase output so agent-execute and any
+# future CI-side screenshot pass can target the same URL the env-prep
+# verified.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lease_id:
+        description: Glimmung lease ID (ULID)
+        required: true
+        type: string
+      host:
+        description: Glimmung host venue (e.g. tank-operator-issue-agents)
+        required: true
+        type: string
+      issue_number:
+        description: Issue number to address
+        required: true
+        type: string
+      issue_title:
+        description: Issue title (informational)
+        required: false
+        type: string
+      issue_id:
+        description: Glimmung Issue id (ULID, optional).
+        required: false
+        type: string
+      gh_event:
+        description: Originating GitHub event (informational)
+        required: false
+        type: string
+      gh_action:
+        description: Originating GitHub action (informational)
+        required: false
+        type: string
+      run_id:
+        description: Glimmung Run ULID (used for branch=glimmung/<run_id>)
+        required: true
+        type: string
+      attempt_index:
+        description: 0-based attempt index for this phase.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GLIMMUNG_BASE: https://glimmung.romaine.life
+  GLIMMUNG_PROJECT: tank-operator
+  # The live tank-operator URL the agent will be verifying against.
+  # Used both for the styleguide curl + as the validation_url phase
+  # output threaded into agent-execute.
+  TANK_OPERATOR_URL: https://operator.romaine.life
+
+jobs:
+  route:
+    name: Verify glimmung lease
+    runs-on: tank-operator-issue-agents
+    steps:
+      - name: Verify glimmung lease
+        env:
+          LEASE_ID: ${{ inputs.lease_id }}
+          HOST: ${{ inputs.host }}
+        run: |
+          set -euo pipefail
+          resp=$(curl -fsS "${GLIMMUNG_BASE}/v1/lease/${LEASE_ID}?project=${GLIMMUNG_PROJECT}")
+          state=$(printf '%s' "$resp" | jq -r .state)
+          host=$(printf '%s' "$resp" | jq -r .host)
+          if [[ "$state" != "active" ]]; then
+            echo "::error::lease ${LEASE_ID} state=${state} (expected active)"
+            exit 1
+          fi
+          if [[ "$host" != "$HOST" ]]; then
+            echo "::error::lease ${LEASE_ID} host=${host} (expected ${HOST})"
+            exit 1
+          fi
+          echo "lease verified: ${LEASE_ID} active on ${HOST}"
+
+  env-prep:
+    name: Resolve validation URL
+    needs: route
+    runs-on: tank-operator-issue-agents
+    outputs:
+      validation_url: ${{ steps.vars.outputs.validation_url }}
+    steps:
+      - name: Compute phase outputs
+        id: vars
+        env:
+          GLIMMUNG_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GLIMMUNG_RUN_ID}" ]; then
+            echo "::error::missing inputs.run_id (required under glimmung#69)"
+            exit 1
+          fi
+          echo "validation_url=${TANK_OPERATOR_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Notify glimmung — env-prep started
+        env:
+          GLIMMUNG_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -nc \
+            --argjson rid "${GITHUB_RUN_ID}" \
+            --arg vurl "${TANK_OPERATOR_URL}" \
+            '{workflow_run_id: $rid, validation_url: $vurl}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${GLIMMUNG_BASE}/v1/runs/${GLIMMUNG_PROJECT}/${GLIMMUNG_RUN_ID}/started" \
+            || echo "::warning::failed to post started callback to glimmung; continuing"
+
+  verify-styleguide:
+    name: Verify /_styleguide contract
+    needs: env-prep
+    uses: nelsong6/pipeline-templates/.github/workflows/verify-styleguide.yml@main
+    with:
+      validation_url: ${{ needs.env-prep.outputs.validation_url }}
+      glimmung_project: tank-operator
+      glimmung_run_id: ${{ inputs.run_id }}
+
+  notify-completed:
+    name: Notify glimmung — env-prep completed
+    needs: [env-prep, verify-styleguide]
+    runs-on: tank-operator-issue-agents
+    steps:
+      - name: Post completed callback with phase outputs
+        env:
+          GLIMMUNG_RUN_ID: ${{ inputs.run_id }}
+          VALIDATION_URL: ${{ needs.env-prep.outputs.validation_url }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -nc \
+            --argjson rid "${GITHUB_RUN_ID}" \
+            --arg conclusion "success" \
+            --arg vurl "${VALIDATION_URL}" \
+            '{workflow_run_id: $rid, conclusion: $conclusion, outputs: {validation_url: $vurl}}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${GLIMMUNG_BASE}/v1/runs/${GLIMMUNG_PROJECT}/${GLIMMUNG_RUN_ID}/completed" \
+            || echo "::warning::failed to post completed callback to glimmung; continuing"
+
+  release-lease:
+    name: Release glimmung lease
+    needs: [route, env-prep, verify-styleguide]
+    if: always()
+    runs-on: tank-operator-issue-agents
+    steps:
+      - name: Release lease
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST "${GLIMMUNG_BASE}/v1/lease/${{ inputs.lease_id }}/release?project=${GLIMMUNG_PROJECT}" >/dev/null
