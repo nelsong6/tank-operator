@@ -105,6 +105,20 @@ function IconClose() {
   );
 }
 
+function BrandMark() {
+  return (
+    <svg viewBox="0 0 64 64" width="18" height="18" fill="none"
+         stroke="currentColor" strokeWidth="2.5"
+         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="8" y="28" width="40" height="14" rx="3" />
+      <circle cx="16" cy="46" r="5" />
+      <circle cx="40" cy="46" r="5" />
+      <line x1="48" y1="32" x2="58" y2="32" />
+      <rect x="22" y="20" width="14" height="8" rx="1.5" />
+    </svg>
+  );
+}
+
 function initials(user: SessionUser): string {
   const source = (user.name || user.email || "?").trim();
   const parts = source.split(/[\s@._-]+/).filter(Boolean);
@@ -359,6 +373,7 @@ export function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
+          <span className="brand-mark" aria-hidden="true"><BrandMark /></span>
           <h1>tank-operator</h1>
         </div>
 

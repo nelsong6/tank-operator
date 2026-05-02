@@ -62,9 +62,31 @@
   --accent-soft: rgba(56, 189, 248, 0.15);
   --accent-fg: #bae6fd;
   --unread: #0ea5e9;
+
+  /* Remote-control cyan — third accent, reserved for the live-link affordance
+     on subscription tabs. Matches the cyan tone of the subscription mode chip
+     but used at higher saturation for active-action states. */
+  --cyan: #67e8f9;
+  --cyan-bright: #a5f3fc;
+  --cyan-bg: rgba(34, 211, 238, 0.12);
+  --cyan-border: rgba(34, 211, 238, 0.45);
+
+  /* Semantic statuses */
   --status-online: #22c55e;
+  --status-online-bg: rgba(34, 197, 94, 0.12);
+  --status-online-border: rgba(34, 197, 94, 0.45);
   --status-error-bg: rgba(239, 68, 68, 0.12);
   --status-error-fg: #f87171;
+  --status-pending-bg: var(--gray-850);
+  --status-pending-fg: var(--gray-400);
+
+  /* Mode chips (auth modes) */
+  --mode-subscription-bg: var(--accent-soft);
+  --mode-subscription-fg: var(--accent-fg);
+  --mode-api-key-bg: rgba(168, 85, 247, 0.12);
+  --mode-api-key-fg: #d8b4fe;
+  --mode-config-bg: rgba(244, 114, 182, 0.12);
+  --mode-config-fg: #f9a8d4;
 
   /* Radii */
   --radius-sm: 0.375rem;
@@ -83,6 +105,10 @@
   --space-6: 2rem;
 
   --sidebar-width: 260px;
+
+  /* Shadows */
+  --shadow-dropdown: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-avatar-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 
   /* Motion */
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -220,7 +246,14 @@ button:disabled {
 .sidebar-brand {
   display: flex;
   align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) calc(var(--space-2) + 0.0625rem) var(--space-1);
+  flex-shrink: 0;
+}
+
+.brand-mark {
+  display: inline-flex;
+  color: var(--text-primary);
   flex-shrink: 0;
 }
 
@@ -335,7 +368,7 @@ button:disabled {
   border: 1px solid var(--gray-800);
   border-radius: var(--radius-xl);
   min-width: 14rem;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-dropdown);
   font-size: var(--text-sm);
   color: var(--text-body);
   animation: dropdown-in var(--motion-mid) var(--ease-out);
@@ -480,7 +513,7 @@ button:disabled {
 
 .session-remote-link {
   padding: var(--space-1);
-  color: #67e8f9;
+  color: var(--cyan);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -490,8 +523,8 @@ button:disabled {
 }
 
 .session-remote-link:hover:not(.is-pending) {
-  background: rgba(34, 211, 238, 0.12);
-  color: #a5f3fc;
+  background: var(--cyan-bg);
+  color: var(--cyan-bright);
 }
 
 .session-remote-link.is-pending {
@@ -523,9 +556,9 @@ button:disabled {
   flex-shrink: 0;
 }
 
-.status-active   { background: rgba(34,197,94,0.12); color: var(--status-online); }
+.status-active   { background: var(--status-online-bg); color: var(--status-online); }
 .status-failed   { background: var(--status-error-bg); color: var(--status-error-fg); }
-.status-pending  { background: var(--gray-850); color: var(--gray-400); }
+.status-pending  { background: var(--status-pending-bg); color: var(--status-pending-fg); }
 
 .mode {
   font-size: 10px;
@@ -538,9 +571,9 @@ button:disabled {
   flex-shrink: 0;
 }
 
-.mode-subscription   { background: var(--accent-soft); color: var(--accent-fg); }
-.mode-api_key        { background: rgba(168,85,247,0.12); color: #d8b4fe; }
-.mode-config         { background: rgba(244,114,182,0.12); color: #f9a8d4; }
+.mode-subscription   { background: var(--mode-subscription-bg); color: var(--mode-subscription-fg); }
+.mode-api_key        { background: var(--mode-api-key-bg); color: var(--mode-api-key-fg); }
+.mode-config         { background: var(--mode-config-bg); color: var(--mode-config-fg); }
 
 /* Profile footer — OWUI Sidebar.svelte:1593-1638 */
 
@@ -582,7 +615,7 @@ button:disabled {
   letter-spacing: 0.02em;
   flex-shrink: 0;
   font-family: var(--font-primary);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  box-shadow: var(--shadow-avatar-inset);
 }
 
 .profile-text {
@@ -833,7 +866,7 @@ button:disabled {
 .tab-action {
   background: transparent;
   color: var(--status-online);
-  border: 1px solid rgba(34, 197, 94, 0.45);
+  border: 1px solid var(--status-online-border);
   padding: 0.15rem var(--space-2);
   margin: 0 var(--space-2);
   font-size: var(--text-xs);
@@ -842,7 +875,7 @@ button:disabled {
   cursor: pointer;
 }
 
-.tab-action:hover:not(:disabled) { background: rgba(34, 197, 94, 0.12); }
+.tab-action:hover:not(:disabled) { background: var(--status-online-bg); }
 .tab-action:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Remote-control variant of the tab-bar action: cyan to match its mode chip,
@@ -852,12 +885,12 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  color: #67e8f9;
-  border-color: rgba(34, 211, 238, 0.45);
+  color: var(--cyan);
+  border-color: var(--cyan-border);
   text-decoration: none;
 }
 
-.tab-action-link:hover { background: rgba(34, 211, 238, 0.12); }
+.tab-action-link:hover { background: var(--cyan-bg); }
 
 .tab-action.is-pending {
   color: var(--text-faint);
