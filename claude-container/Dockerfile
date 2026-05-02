@@ -85,13 +85,16 @@ RUN pip install --no-cache-dir --break-system-packages /opt/mcp-auth-proxy
 COPY claude-container/mcp.json /opt/claude-container/mcp.json
 RUN mkdir -p /workspace && cp /opt/claude-container/mcp.json /workspace/.mcp.json
 
-# Default global CLAUDE.md primer. tank-bootstrap.sh copies this to
-# ~/.claude/CLAUDE.md on first connect so the agent always boots with
-# pod-context (ephemeral k8s pod, no git push, MCP wiring, etc.) loaded
-# as user-scope context. Source filename is intentionally not CLAUDE.md
-# so Claude Code won't auto-load the seed as project docs when an agent
-# works in claude-container/ inside the tank-operator repo.
+# Default project-scope CLAUDE.md primer. Lands in /workspace so Claude
+# Code auto-loads it for any cwd under /workspace (including cloned
+# repos), describing the pod environment without conflating with
+# user-scope (~/.claude/CLAUDE.md), which is left free for genuine user
+# prefs. Also kept at /opt/claude-container/CLAUDE.md for users who
+# mount their own /workspace. Source filename is intentionally not
+# CLAUDE.md so Claude Code won't auto-load the seed as project docs
+# when an agent works in claude-container/ inside the tank-operator repo.
 COPY claude-container/default-claude.md /opt/claude-container/CLAUDE.md
+RUN cp /opt/claude-container/CLAUDE.md /workspace/CLAUDE.md
 
 # Thin passthrough entrypoint kept for direct `docker run` / `kubectl
 # exec` consumers. The orchestrator's bridge bypasses ENTRYPOINT (sets
