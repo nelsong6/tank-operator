@@ -413,7 +413,12 @@ export function App() {
               const isEditing = editingId === s.id;
               const isLive = s.status === "Active";
               return (
-                <li key={s.id} className={isActive ? "is-open" : ""}>
+                <li
+                  key={s.id}
+                  className={isActive ? "is-open" : ""}
+                  onClick={isEditing ? undefined : () => activate(s.id)}
+                  onDoubleClick={isEditing ? undefined : () => startEditing(s.id, s.name)}
+                >
                   {isEditing ? (
                     <div className="session-open">
                       <input
@@ -435,8 +440,6 @@ export function App() {
                   ) : (
                     <button
                       className="session-open"
-                      onClick={() => activate(s.id)}
-                      onDoubleClick={() => startEditing(s.id, s.name)}
                       title={s.name ? `${s.id} — double-click to rename` : "double-click to rename"}
                     >
                       <span className="session-id">{s.name ?? s.id}</span>
