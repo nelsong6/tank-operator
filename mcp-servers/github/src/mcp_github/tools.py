@@ -21,26 +21,36 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         ]
 
     @mcp.tool()
-    def mint_clone_token(repos: list[str]) -> dict[str, str]:
-        """Mint a short-lived (~1h) GitHub App installation token scoped
-        read-only over the given repos, suitable for `git clone` / `fetch` /
-        `pull` of private repos from a session container.
+    def mint_clone_token(repos: list[str], write: bool = False) -> dict[str, str]:
+        """Mint a short-lived (~1h) GitHub App installation token scoped over
+        the given repos, suitable for `git clone` / `fetch` / `pull` (default)
+        or `git push` (`write=True`) from a session container.
 
-        The token is scoped down to {contents: read, metadata: read} so it
-        cannot be used to push, comment, or otherwise mutate. All write
-        operations (commit, branch, PR, issue mutation) must go through the
-        other MCP tools — those route through the no-caller-SHA write
-        surface that's the project's contract for safe automated writes.
-        See tank-operator/CLAUDE.md → "mcp-github write surface".
+        Default scope is {contents: read, metadata: read} so the token cannot
+        push, comment, or otherwise mutate. With `write=True` the scope widens
+        to {contents: write, metadata: read} — the caller can `git push` to
+        any branch they have permission for, including direct commits to main.
+
+        Prefer the dedicated MCP write tools (`commit_to_branch`,
+        `create_or_update_file`, etc.) for routine mutations: they resolve
+        base refs server-side and avoid the cached-SHA-revert footgun
+        documented in tank-operator/CLAUDE.md → "mcp-github write surface".
+        Reach for `write=True` when you genuinely need a working tree on disk
+        — large lockfiles, multi-file refactors driven by tooling, anything
+        that's awkward to enumerate as an explicit `files` array.
 
         Use from a session container as:
             TOKEN=<value of `token` from this call>
             git clone https://x-access-token:${TOKEN}@github.com/owner/name.git
+            # … work …
+            git push  # only when minted with write=True
 
         Args:
             repos: list of "owner/name" strings to scope the token to.
                 Required — blanket-scoped tokens are intentionally not
                 offered; pass exactly the repos you need.
+            write: if True, mint with contents: write so the token can push.
+                Default False (read-only).
 
         Returns: {"token": "...", "expires_at": "<iso8601>"}.
         """
@@ -53,7 +63,10 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
             repo_names.append(r.split("/", 1)[1])
         token, expires_at = gh.mint_scoped_token(
             repositories=repo_names,
-            permissions={"contents": "read", "metadata": "read"},
+            permissions={
+                "contents": "write" if write else "read",
+                "metadata": "read",
+            },
         )
         return {"token": token, "expires_at": expires_at}
 
