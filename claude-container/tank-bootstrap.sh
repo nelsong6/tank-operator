@@ -11,6 +11,9 @@
 # causing reconnects to 400 with WSServerHandshakeError.
 #
 # State seeded here:
+#   ~/.claude/CLAUDE.md           — default global primer copied from the
+#                                   image (claude-container/default-claude.md).
+#                                   User-scope context loaded into every prompt.
 #   ~/.claude/settings.json       — theme + bypassPermissions defaultMode +
 #                                   skipDangerousModePermissionPrompt
 #   ~/.claude.json                — onboarding flag + API-key trust list
@@ -69,6 +72,7 @@ fi
 # /workspace/.mcp.json, and the sidecar reads the projected SA token
 # fresh per request. No bearer-env-var wiring needed here anymore.
 mkdir -p $HOME/.claude
+cp /opt/claude-container/CLAUDE.md $HOME/.claude/CLAUDE.md
 cat > $HOME/.claude/settings.json <<'EOF'
 {"theme":"dark","permissions":{"defaultMode":"bypassPermissions"},"skipDangerousModePermissionPrompt":true}
 EOF
