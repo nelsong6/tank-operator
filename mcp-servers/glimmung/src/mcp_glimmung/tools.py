@@ -1,8 +1,9 @@
 """mcp-glimmung tools — typed wrappers over glimmung's HTTP API.
 
-Read surface plus the two by-id PATCH endpoints. Lease / dispatch / signal /
-hosts / admin / webhook endpoints are deliberately not exposed — those are
-runner / orchestrator concerns, not session concerns.
+Read surface plus the by-id PATCH endpoints and selectively-exposed admin
+mutations (`abort_run`). Lease / dispatch / signal / hosts / webhook
+endpoints stay unexposed — those are runner / orchestrator concerns, not
+session concerns.
 """
 
 from typing import Any
@@ -80,9 +81,9 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         labels: list[str] | None = None,
         state: str | None = None,
     ) -> dict[str, Any]:
-        """Patch an Issue. All fields optional — None means "don't change".
+        """Patch an Issue. All fields optional — None means \"don't change\".
         Pass an empty string to actually clear `body`, or an empty list to
-        clear `labels`. `state` is "open" or "closed"; transitions route
+        clear `labels`. `state` is \"open\" or \"closed\"; transitions route
         through close_issue / reopen_issue so closed_at is stamped
         consistently."""
         payload: dict[str, Any] = {}
@@ -95,6 +96,25 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         if state is not None:
             payload["state"] = state
         return client.patch(f"/v1/issues/by-id/{project}/{issue_id}", json=payload)
+
+    @mcp.tool()
+    def abort_run(
+        project: str,
+        run_id: str,
+        reason: str = "aborted_via_mcp",
+    ) -> dict[str, Any]:
+        """Flip a Run from in_progress to aborted and release any locks
+        it was holding. Use when a Run is orphaned (no lease, no
+        workflow_run_id) and `cancel_lease` can't grip onto it.
+
+        Idempotent — calling twice returns `state: already_terminal` the
+        second time. If the Run has a workflow_run_id, a GH cancel is
+        POSTed best-effort; `gh_run_cancelled` records the outcome
+        (`None` if no GH dispatch was attempted)."""
+        return client.post(
+            f"/v1/runs/{project}/{run_id}/abort",
+            params={"reason": reason},
+        )
 
     @mcp.tool()
     def patch_pr(
@@ -111,8 +131,8 @@ def register_tools(mcp: FastMCP, client: GlimmungClient) -> None:
         state: str | None = None,
         merged_by: str | None = None,
     ) -> dict[str, Any]:
-        """Patch a PR. All fields optional — None means "don't change".
-        `state` is "open", "closed", or "merged"; "merged" requires
+        """Patch a PR. All fields optional — None means \"don't change\".
+        `state` is \"open\", \"closed\", or \"merged\"; \"merged\" requires
         `merged_by`. Closed-vs-merged route to close_pr vs merge_pr
         (different timestamp invariants)."""
         payload: dict[str, Any] = {}
