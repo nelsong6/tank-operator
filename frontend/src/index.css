@@ -814,6 +814,14 @@ button:disabled {
 .session-action:hover:not(:disabled) { background: rgba(79, 140, 247, 0.22); }
 .session-action:disabled { opacity: 0.4; cursor: default; }
 
+.session-action.is-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  line-height: 0;
+}
+
 .session-action.session-remote { background: var(--cyan-bg); color: var(--cyan); }
 .session-action.session-remote:hover:not(:disabled) { background: rgba(34, 211, 238, 0.22); color: var(--cyan-bright); }
 

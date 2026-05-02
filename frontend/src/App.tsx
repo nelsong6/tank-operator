@@ -113,6 +113,27 @@ function IconClose() {
   );
 }
 
+function IconExternal() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="none"
+         stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 3h3v3" />
+      <path d="M13 3 8 8" />
+      <path d="M11.5 9V13H3V4.5h4" />
+    </svg>
+  );
+}
+
+function IconReload() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="none"
+         stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+      <polyline points="13.5 2.5 13.5 5 11 5" />
+    </svg>
+  );
+}
+
 function initials(user: SessionUser): string {
   const source = (user.name || user.email || "?").trim();
   const parts = source.split(/[\s@._-]+/).filter(Boolean);
@@ -495,11 +516,12 @@ export function App() {
                     <span className={`mode mode-${s.mode}`}>{MODE_CHIP_LABELS[s.mode] ?? s.mode}</span>
                     {s.mode === "subscription" && isLive && (
                       <button
-                        className="session-action session-remote"
+                        className="session-action session-remote is-icon"
                         onClick={(e) => { e.stopPropagation(); startRemoteControl(s.id); }}
                         title="type /remote-control into this session — claude will print a https://claude.ai/code/session_… URL you can open"
+                        aria-label="open remote control link"
                       >
-                        remote
+                        <IconExternal />
                       </button>
                     )}
                     {s.mode === "config" && (
@@ -513,12 +535,13 @@ export function App() {
                       </button>
                     )}
                     <button
-                      className="session-action"
+                      className="session-action is-icon"
                       onClick={(e) => { e.stopPropagation(); clearSession(s.id); }}
                       disabled={busy}
                       title="delete this pod and replace it with a fresh one"
+                      aria-label="refresh session pod"
                     >
-                      clear
+                      <IconReload />
                     </button>
                   </div>
                 </li>
