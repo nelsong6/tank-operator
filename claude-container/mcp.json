@@ -16,6 +16,10 @@
       "type": "http",
       "url": "http://127.0.0.1:9994/"
     },
+    "glimmung": {
+      "type": "http",
+      "url": "http://127.0.0.1:9995/"
+    },
     "platform": {
       "command": "platform-mcp"
     }

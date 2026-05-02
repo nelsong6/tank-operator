@@ -39,6 +39,7 @@ LISTENERS: list[tuple[int, str]] = [
     (9992, "http://mcp-github.mcp-github.svc:80"),
     (9993, "http://mcp-k8s.mcp-k8s.svc:80"),
     (9994, "http://mcp-argocd.mcp-argocd.svc:80"),
+    (9995, "http://mcp-glimmung.mcp-glimmung.svc:80"),
 ]
 
 # Headers we strip from the inbound request before forwarding. Host is
