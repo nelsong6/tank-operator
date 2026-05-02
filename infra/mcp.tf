@@ -58,3 +58,36 @@ module "mcp_azure" {
     }
   }
 }
+
+# ----------------------------------------------------------------------------
+# mcp-azure: Cosmos data-plane reads
+# ----------------------------------------------------------------------------
+# Cosmos SQL API uses its own RBAC system (not ARM RBAC) — even Reader at
+# subscription scope doesn't grant data-plane reads. Without a Cosmos-native
+# role any cosmos query through azure-mcp comes back as 403 readMetadata.
+#
+# Account-scope Built-in Data Reader on every Cosmos account in this tenant
+# so azure-mcp can inspect any database/container under them. Read-only;
+# bump role_definition_id to `...000002` (Built-in Data Contributor) on a
+# per-account basis if a write surface is later needed.
+
+data "azurerm_cosmosdb_account" "infra_serverless" {
+  name                = "infra-cosmos-serverless"
+  resource_group_name = data.azurerm_resource_group.main.name
+}
+
+resource "azurerm_cosmosdb_sql_role_assignment" "mcp_azure_infra_serverless_reader" {
+  resource_group_name = data.azurerm_resource_group.main.name
+  account_name        = data.azurerm_cosmosdb_account.infra_serverless.name
+  role_definition_id  = "${data.azurerm_cosmosdb_account.infra_serverless.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000001"
+  principal_id        = module.mcp_azure.managed_identity_principal_id
+  scope               = data.azurerm_cosmosdb_account.infra_serverless.id
+}
+
+resource "azurerm_cosmosdb_sql_role_assignment" "mcp_azure_tank_operator_reader" {
+  resource_group_name = data.azurerm_resource_group.main.name
+  account_name        = azurerm_cosmosdb_account.tank_operator.name
+  role_definition_id  = "${azurerm_cosmosdb_account.tank_operator.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000001"
+  principal_id        = module.mcp_azure.managed_identity_principal_id
+  scope               = azurerm_cosmosdb_account.tank_operator.id
+}
