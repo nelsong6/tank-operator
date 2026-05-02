@@ -456,14 +456,30 @@ button:disabled {
    brighter inset border + a 2px accent-blue left stripe. */
 .sessions li {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
   background: transparent;
   border-radius: var(--radius-lg);
   padding: 6px 11px;
   min-height: 32px;
   cursor: pointer;
   transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.session-row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.session-row-bottom {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* Indent so chips/actions visually align with the name above the dot. */
+  padding-left: calc(6px + var(--space-2));
 }
 
 .sessions li:hover {
@@ -481,7 +497,6 @@ button:disabled {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: var(--space-2);
   text-align: left;
   padding: 0;
   font-family: var(--font-primary);
@@ -527,22 +542,25 @@ button:disabled {
 .sessions-empty { cursor: default; }
 .sessions-empty:hover { background: transparent; }
 
-/* Status / mode chips ------------------------------------------------------- */
+/* Status dot / mode chips --------------------------------------------------- *
+ * Status used to be a text pill ("Active" / "Pending" / "Failed") rendered in
+ * the same row as the name and action chips. With actions added (remote, save,
+ * clear), the row got too crowded and the name was being clipped off entirely.
+ * Status is now a 6px colored dot to the left of the name — the word adds no
+ * information the color can't, and the name reclaims the row width. */
 
-.status {
-  font-size: 10px;
-  padding: 0.05rem var(--space-2);
-  border-radius: var(--radius-pill);
-  background: var(--gray-850);
-  color: var(--text-muted);
-  font-weight: 500;
-  letter-spacing: 0.01em;
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   flex-shrink: 0;
+  background: var(--text-faint);
+  display: inline-block;
 }
 
-.status-active   { background: var(--status-online-bg); color: var(--status-online); }
-.status-failed   { background: var(--status-error-bg); color: var(--status-error-fg); }
-.status-pending  { background: var(--status-pending-bg); color: var(--status-pending-fg); }
+.status-dot.status-active  { background: var(--status-online); }
+.status-dot.status-failed  { background: var(--status-error-fg); }
+.status-dot.status-pending { background: var(--text-faint); }
 
 .mode {
   font-size: 10px;

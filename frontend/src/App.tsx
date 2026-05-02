@@ -20,6 +20,14 @@ const MODE_LABELS: Record<SessionMode, string> = {
   config: "Config sub",
 };
 
+// Compact labels for the inline session-row chip — "Subscription" is too wide
+// to coexist with the action pills. Falls back to MODE_LABELS elsewhere.
+const MODE_CHIP_LABELS: Record<SessionMode, string> = {
+  api_key: "api",
+  subscription: "sub",
+  config: "config",
+};
+
 const MODE_HINTS: Record<SessionMode, string> = {
   subscription: "Default — uses claude.ai login",
   api_key: "Billed via API",
@@ -446,8 +454,13 @@ export function App() {
                   onClick={isEditing ? undefined : () => activate(s.id)}
                   onDoubleClick={isEditing ? undefined : () => startEditing(s.id, s.name)}
                 >
-                  {isEditing ? (
-                    <div className="session-open">
+                  <div className="session-row-top">
+                    <span
+                      className={`status-dot status-${s.status.toLowerCase()}`}
+                      title={s.status}
+                      aria-label={`status: ${s.status}`}
+                    />
+                    {isEditing ? (
                       <input
                         className="session-name-input"
                         value={editingValue}
@@ -461,54 +474,53 @@ export function App() {
                         placeholder={s.id}
                         maxLength={80}
                       />
-                      <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
-                      <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
-                    </div>
-                  ) : (
+                    ) : (
+                      <button
+                        className="session-open"
+                        title={s.name ? `${s.id} — double-click to rename` : "double-click to rename"}
+                      >
+                        <span className="session-id">{s.name ?? s.id}</span>
+                      </button>
+                    )}
                     <button
-                      className="session-open"
-                      title={s.name ? `${s.id} — double-click to rename` : "double-click to rename"}
+                      className="session-delete"
+                      onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                      title="delete session"
+                      aria-label="delete session"
                     >
-                      <span className="session-id">{s.name ?? s.id}</span>
-                      <span className={`mode mode-${s.mode}`}>{MODE_LABELS[s.mode] ?? s.mode}</span>
-                      <span className={`status status-${s.status.toLowerCase()}`}>{s.status}</span>
+                      <IconClose />
                     </button>
-                  )}
-                  {s.mode === "subscription" && isLive && (
-                    <button
-                      className="session-action session-remote"
-                      onClick={(e) => { e.stopPropagation(); startRemoteControl(s.id); }}
-                      title="type /remote-control into this session — claude will print a https://claude.ai/code/session_… URL you can open"
-                    >
-                      remote
-                    </button>
-                  )}
-                  {s.mode === "config" && (
+                  </div>
+                  <div className="session-row-bottom">
+                    <span className={`mode mode-${s.mode}`}>{MODE_CHIP_LABELS[s.mode] ?? s.mode}</span>
+                    {s.mode === "subscription" && isLive && (
+                      <button
+                        className="session-action session-remote"
+                        onClick={(e) => { e.stopPropagation(); startRemoteControl(s.id); }}
+                        title="type /remote-control into this session — claude will print a https://claude.ai/code/session_… URL you can open"
+                      >
+                        remote
+                      </button>
+                    )}
+                    {s.mode === "config" && (
+                      <button
+                        className="session-action"
+                        onClick={(e) => { e.stopPropagation(); saveCredentials(s.id); }}
+                        disabled={busy || !isLive}
+                        title="capture ~/.claude/.credentials.json from this pod and write it to KV"
+                      >
+                        save
+                      </button>
+                    )}
                     <button
                       className="session-action"
-                      onClick={(e) => { e.stopPropagation(); saveCredentials(s.id); }}
-                      disabled={busy || !isLive}
-                      title="capture ~/.claude/.credentials.json from this pod and write it to KV"
+                      onClick={(e) => { e.stopPropagation(); clearSession(s.id); }}
+                      disabled={busy}
+                      title="delete this pod and replace it with a fresh one"
                     >
-                      save
+                      clear
                     </button>
-                  )}
-                  <button
-                    className="session-action"
-                    onClick={(e) => { e.stopPropagation(); clearSession(s.id); }}
-                    disabled={busy}
-                    title="delete this pod and replace it with a fresh one"
-                  >
-                    clear
-                  </button>
-                  <button
-                    className="session-delete"
-                    onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
-                    title="delete session"
-                    aria-label="delete session"
-                  >
-                    <IconClose />
-                  </button>
+                  </div>
                 </li>
               );
             })}
