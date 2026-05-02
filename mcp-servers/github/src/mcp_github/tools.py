@@ -353,6 +353,21 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         return {"ref": r["ref"], "sha": r["object"]["sha"], "base": base, "base_sha": base_sha}
 
     @mcp.tool()
+    def delete_branch(owner: str, name: str, branch: str) -> dict[str, Any]:
+        """Delete a branch ref via DELETE /repos/{owner}/{name}/git/refs/heads/{branch}.
+
+        Use for cleaning up stale branches — e.g. a working branch left behind
+        when its work landed on main via direct push (so PR-merge auto-delete
+        didn't fire), or an abandoned branch with no PR.
+
+        GitHub rejects deleting the repo's default branch (422) and any branch
+        covered by a 'restrict deletions' protection rule (422), so no extra
+        guard is needed here — those failures surface as HTTPStatusError.
+        Missing branches 422 with 'Reference does not exist'."""
+        gh.delete(f"/repos/{owner}/{name}/git/refs/heads/{branch}")
+        return {"deleted": True, "branch": branch}
+
+    @mcp.tool()
     def commit_to_branch(
         owner: str,
         name: str,
