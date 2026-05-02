@@ -340,3 +340,12 @@ if _static.exists():
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(_static / "index.html")
+
+    @app.get("/_styleguide")
+    async def styleguide() -> FileResponse:
+        # SPA-served. The Vite bundle's main.tsx routes to StyleguideView
+        # when window.location.pathname matches; we just need to serve
+        # the same index.html so the bundle loads. Glimmung's UI pilot
+        # contract — see frontend/src/StyleguideView.tsx and the
+        # docs/styleguide-contract.md in the glimmung repo.
+        return FileResponse(_static / "index.html")

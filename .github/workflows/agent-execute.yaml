@@ -1,18 +1,19 @@
-name: Issue Agent
+name: Issue Agent — agent-execute
 
-run-name: "#${{ inputs.issue_number }} ${{ inputs.issue_title }} (${{ inputs.host }})"
+run-name: "#${{ inputs.issue_number }} agent-execute ${{ inputs.issue_title }} (${{ inputs.host }})"
 
-# Glimmung is the entry point. https://glimmung.romaine.life/v1/webhook/github
-# receives the GitHub `issues` event, atomically claims a host, and fires this
-# workflow_dispatch with lease_id + host + issue_number. The actual Claude run
-# happens in an in-cluster k8s Job that reaches api.anthropic.com via the
-# tank-operator/claude-api-proxy (which stamps subscription auth per request);
-# this workflow is the orchestration outer loop. Modeled on ambience's
-# agent-run.yml.
+# Phase 2 of the multi-phase issue-agent pipeline (glimmung#102 pattern,
+# tank-operator rollout). env-prep already verified the live operator
+# /_styleguide contract; this phase runs the actual agent against the
+# repo and lets glimmung open the PR. validation_url is threaded in
+# from env-prep's outputs (glimmung#101 substitution) so the agent and
+# any future screenshot pass target the same URL the contract was
+# verified against.
 #
-# No heartbeat: glimmung's TTL + workflow_run.completed release covers
-# liveness. The release-lease job below is the explicit happy-path release;
-# if the runner dies mid-run the webhook handler picks up the slack.
+# Heavy lifting (Claude run + push) happens inside an in-cluster k8s
+# Job that reaches api.anthropic.com via the tank-operator/claude-api-
+# proxy (subscription auth per request). This workflow is the
+# orchestration outer loop.
 
 on:
   workflow_dispatch:
@@ -47,7 +48,7 @@ on:
       # this workflow since pr.enabled=False and verify=False).
       run_id:
         description: Glimmung Run ULID (used for branch=glimmung/<run_id>)
-        required: false
+        required: true
         type: string
       attempt_index:
         description: 0-based attempt index. 0 = initial; >0 = recycle.
@@ -64,6 +65,15 @@ on:
       pr_number:
         description: Existing PR number on a recycle dispatch.
         required: false
+        type: string
+      issue_id:
+        description: Glimmung Issue id (ULID, optional).
+        required: false
+        type: string
+      # ── Inputs threaded from env-prep's outputs (glimmung#101) ──
+      validation_url:
+        description: Live operator URL env-prep verified the styleguide on.
+        required: true
         type: string
 
 permissions:
@@ -101,18 +111,34 @@ jobs:
           fi
           echo "lease verified: ${LEASE_ID} active on ${HOST}"
 
-  agent:
+  agent-execute:
     name: Run agent + open PR
     needs: route
     runs-on: tank-operator-issue-agents
     env:
       ISSUE_NUMBER: ${{ inputs.issue_number }}
       ISSUE_TITLE: ${{ inputs.issue_title }}
+      VALIDATION_URL: ${{ inputs.validation_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Notify glimmung — agent-execute started
+        # Stamps THIS phase's GHA workflow_run_id on the agent-execute
+        # PhaseAttempt. validation_url was already stamped on the Run
+        # by env-prep's started callback.
+        env:
+          GLIMMUNG_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -nc --argjson rid "${GITHUB_RUN_ID}" '{workflow_run_id: $rid}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${GLIMMUNG_BASE}/v1/runs/${GLIMMUNG_PROJECT}/${GLIMMUNG_RUN_ID}/started" \
+            || echo "::warning::failed to post started callback to glimmung; continuing"
 
       # No az / no `azure/login` / no `az aks get-credentials`. The runner
       # talks to the cluster as itself: kubectl with in-cluster config
@@ -208,9 +234,28 @@ jobs:
           kubectl -n "${NAMESPACE}" delete configmap "${AGENT_CONFIGMAP}" --ignore-not-found=true || true
           kubectl -n "${NAMESPACE}" delete secret "${AGENT_GITHUB_SECRET}" --ignore-not-found=true || true
 
+      - name: Notify glimmung — run completed
+        # Terminal phase: no `outputs` declared on the PhaseSpec, so the
+        # payload omits `outputs`. Glimmung records the attempt and (with
+        # pr.enabled=true) opens the PR off the agent's pushed branch.
+        if: success()
+        env:
+          GLIMMUNG_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -nc \
+            --argjson rid "${GITHUB_RUN_ID}" \
+            --arg conclusion "success" \
+            '{workflow_run_id: $rid, conclusion: $conclusion}')
+          curl -sS -X POST \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${GLIMMUNG_BASE}/v1/runs/${GLIMMUNG_PROJECT}/${GLIMMUNG_RUN_ID}/completed" \
+            || echo "::warning::failed to post completed callback to glimmung; continuing"
+
   release-lease:
     name: Release glimmung lease
-    needs: [route, agent]
+    needs: [route, agent-execute]
     if: always()
     runs-on: tank-operator-issue-agents
     steps:
