@@ -21,7 +21,11 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         ]
 
     @mcp.tool()
-    def mint_clone_token(repos: list[str], write: bool = False) -> dict[str, str]:
+    def mint_clone_token(
+        repos: list[str],
+        write: bool = False,
+        workflows: bool = False,
+    ) -> dict[str, str]:
         """Mint a short-lived (~1h) GitHub App installation token scoped over
         the given repos, suitable for `git clone` / `fetch` / `pull` (default)
         or `git push` (`write=True`) from a session container.
@@ -30,6 +34,14 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
         push, comment, or otherwise mutate. With `write=True` the scope widens
         to {contents: write, metadata: read} — the caller can `git push` to
         any branch they have permission for, including direct commits to main.
+
+        Pushes that touch `.github/workflows/*` need an additional opt-in:
+        GitHub gates workflow files behind a separate `workflows` perm even
+        when `contents: write` is granted (the `git push` is rejected with
+        "refusing to allow a GitHub App to create or update workflow ...").
+        Pass `workflows=True` to mint with `workflows: write` added; requires
+        `write=True` since a workflow-only push without contents-write makes
+        no sense.
 
         Prefer the dedicated MCP write tools (`commit_to_branch`,
         `create_or_update_file`, etc.) for routine mutations: they resolve
@@ -51,22 +63,30 @@ def register_tools(mcp: FastMCP, gh: GitHubClient) -> None:
                 offered; pass exactly the repos you need.
             write: if True, mint with contents: write so the token can push.
                 Default False (read-only).
+            workflows: if True, also include workflows: write so pushes that
+                touch `.github/workflows/*` go through. Requires write=True.
+                Default False.
 
         Returns: {"token": "...", "expires_at": "<iso8601>"}.
         """
         if not repos:
             raise ValueError("mint_clone_token: pass at least one repo (e.g. ['nelsong6/glimmung'])")
+        if workflows and not write:
+            raise ValueError("mint_clone_token: workflows=True requires write=True")
         repo_names: list[str] = []
         for r in repos:
             if "/" not in r:
                 raise ValueError(f"repo must be 'owner/name', got: {r}")
             repo_names.append(r.split("/", 1)[1])
+        permissions: dict[str, str] = {
+            "contents": "write" if write else "read",
+            "metadata": "read",
+        }
+        if workflows:
+            permissions["workflows"] = "write"
         token, expires_at = gh.mint_scoped_token(
             repositories=repo_names,
-            permissions={
-                "contents": "write" if write else "read",
-                "metadata": "read",
-            },
+            permissions=permissions,
         )
         return {"token": token, "expires_at": expires_at}
 
