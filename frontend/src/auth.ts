@@ -62,8 +62,11 @@ export function clearStoredToken(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
-/** Run once on app boot. Resolves to the signed-in user, or kicks off a login redirect (which never resolves). */
-export async function bootstrapAuth(): Promise<SessionUser> {
+/** Run once on app boot. Resolves to the signed-in user, or null if not signed in.
+ *  Does NOT trigger a login redirect on its own — the SPA shows a Sign-in button
+ *  for that. Auto-redirecting on boot would silently re-SSO users who just clicked
+ *  sign out (their Microsoft account session outlives our local logout). */
+export async function bootstrapAuth(): Promise<SessionUser | null> {
   const client = await getMsal();
 
   // 1. Did we just come back from Entra?
@@ -87,10 +90,14 @@ export async function bootstrapAuth(): Promise<SessionUser> {
     clearStoredToken();
   }
 
-  // 3. Otherwise, start a login redirect. This call navigates away.
+  // 3. Not signed in. Wait for an explicit click to call startLogin().
+  return null;
+}
+
+/** User-initiated sign-in. Navigates away to Entra. */
+export async function startLogin(): Promise<void> {
+  const client = await getMsal();
   await client.loginRedirect({ scopes: SCOPES });
-  // Unreachable but TypeScript needs a return.
-  return new Promise<never>(() => {});
 }
 
 export async function logout(): Promise<void> {
@@ -100,8 +107,12 @@ export async function logout(): Promise<void> {
   } catch {
     // best-effort
   }
+  // Local-only sign-out: drop MSAL's cached account so the next bootstrap
+  // re-prompts, but don't hit Entra's end_session endpoint — that signs the
+  // user out of their Microsoft account globally across every app.
   const client = await getMsal();
-  await client.logoutRedirect({ postLogoutRedirectUri: `${window.location.origin}/` });
+  await client.clearCache();
+  window.location.assign("/");
 }
 
 /** fetch wrapper that adds the Bearer token. */

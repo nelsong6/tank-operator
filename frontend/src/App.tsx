@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal, type TerminalHandle } from "./Terminal";
-import { authedFetch, bootstrapAuth, logout } from "./auth";
+import { authedFetch, bootstrapAuth, logout, startLogin } from "./auth";
 
 type SessionMode = "api_key" | "subscription" | "config";
 
@@ -185,6 +185,7 @@ function OnboardingWall({
 
 export function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [booted, setBooted] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -209,8 +210,14 @@ export function App() {
 
   useEffect(() => {
     bootstrapAuth()
-      .then(setUser)
-      .catch((e) => setAuthError(String(e)));
+      .then((u) => {
+        setUser(u);
+        setBooted(true);
+      })
+      .catch((e) => {
+        setAuthError(String(e));
+        setBooted(true);
+      });
   }, []);
 
   // Close any open dropdown on an outside click. Both menus use a `data-menu`
@@ -408,8 +415,16 @@ export function App() {
     );
   }
 
+  if (!booted) {
+    return <div className="boot-state"><span className="boot-text">loading…</span></div>;
+  }
+
   if (!user) {
-    return <div className="boot-state"><span className="boot-text">signing in…</span></div>;
+    return (
+      <div className="boot-state">
+        <button className="btn-primary" onClick={() => { startLogin(); }}>Sign in</button>
+      </div>
+    );
   }
 
   if (user.installation_id == null) {
