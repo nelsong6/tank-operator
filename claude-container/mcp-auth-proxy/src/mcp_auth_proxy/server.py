@@ -34,6 +34,13 @@ TOKEN_PATH = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
 
 # (port, upstream URL). Mirrors claude-container/mcp.json. Adding an
 # MCP means: append here, append a port mapping in mcp.json, ship.
+#
+# Port allocation (next free: 9996):
+#   9991 — mcp-azure
+#   9992 — mcp-github
+#   9993 — mcp-k8s
+#   9994 — mcp-argocd
+#   9995 — mcp-glimmung
 LISTENERS: list[tuple[int, str]] = [
     (9991, "http://mcp-azure.mcp-azure.svc:80"),
     (9992, "http://mcp-github.mcp-github.svc:80"),
