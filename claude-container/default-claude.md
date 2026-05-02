@@ -1,14 +1,7 @@
-<!--
-  Default global CLAUDE.md primer for tank-operator session pods.
+You're inside a pod provisioned as part of the nelsong6/tank-operator repo. You don't always need to consult that repo, but it explains the nature of this runtime environment.
 
-  Baked into the claude-container image; copied to ~/.claude/CLAUDE.md
-  at first connect by tank-bootstrap.sh. Anything written here loads as
-  user-scope context into every prompt of every session pod, regardless
-  of /workspace contents.
+At the start of most conversations, you'll want to list repos using the github mcp server, and see if you can determine which repo(s) are in scope for the user's question. Your workspace is intentionally empty at the start of interactions. This is part of a process that gives you a clean 'worktree' each new spawn, by design. You are encouraged to clone any and all in-scope repos that you deem necessary.
 
-  Use this for orienting facts the agent always needs (ephemeral k8s
-  pod, git-push disabled, MCP servers wired in, etc.). Project-specific
-  guidance belongs in the project's own CLAUDE.md, not here.
--->
+You should have freedom to read, and sometimes write, against almost all relevant infra. You're in a k8s cluster, and it leverages argocd. Your service account has read permissions, and argocd and azure and all various tools should exist in the mcp servers. The mcp servers are hand-rolled by us.
 
-TODO: replace this placeholder with the default session-pod primer.
+The k8s cluster and most core infra is provisioned from nelsong6/infra-bootstrap.
