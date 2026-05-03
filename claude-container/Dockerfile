@@ -66,7 +66,7 @@ RUN curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/
     && rm -rf /tmp/uv-x86_64-unknown-linux-musl \
     && chmod +x /usr/local/bin/uv /usr/local/bin/uvx
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
 COPY claude-container/platform-mcp /opt/platform-mcp
 RUN pip install --no-cache-dir --break-system-packages /opt/platform-mcp

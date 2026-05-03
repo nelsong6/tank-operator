@@ -74,3 +74,58 @@ async def harvest_and_save(namespace: str, pod_name: str) -> None:
             await kv.set_secret(secret_name, json.dumps(blob))
     finally:
         await cred.close()
+
+
+def _validate_codex(blob: dict[str, Any]) -> None:
+    """Sanity-check the codex auth.json shape per developers.openai.com/codex/auth.
+
+    We require a refresh_token because the consume-side codex CLI relies on
+    it to rotate the access token in-pod; harvesting an auth.json missing
+    the refresh token would leave the subscription pod with creds that
+    expire in ~30min and never recover.
+    """
+    if blob.get("auth_mode") != "chatgpt":
+        raise CredentialsSeedError(
+            f"codex auth.json has auth_mode={blob.get('auth_mode')!r}; "
+            "expected 'chatgpt' (the ChatGPT subscription path). "
+            "Did you sign in with an API key by mistake?"
+        )
+    tokens = blob.get("tokens") or {}
+    if not tokens.get("refresh_token"):
+        raise CredentialsSeedError(
+            "codex auth.json is missing tokens.refresh_token — the harvested "
+            "blob would be unable to rotate. Re-run `codex login --device-auth`."
+        )
+
+
+async def harvest_codex_and_save(namespace: str, pod_name: str) -> None:
+    """Read ~/.codex/auth.json out of a codex_config pod, validate, write to KV.
+
+    Symmetric to harvest_and_save but for OpenAI codex's auth blob. The KV
+    secret name is separate (`codex-credentials`) — codex_subscription pods
+    consume a different ESO-mirrored Secret than Claude does, since they
+    live in different namespaces and serve different binaries.
+    """
+    raw = await exec_capture(
+        namespace, pod_name, ["sh", "-c", "cat $HOME/.codex/auth.json"]
+    )
+    if not raw:
+        raise CredentialsSeedError(
+            "codex auth.json is empty or missing — complete "
+            "`codex login --device-auth` in the session terminal first"
+        )
+    try:
+        blob = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise CredentialsSeedError(f"auth.json is not valid JSON: {e}") from e
+    _validate_codex(blob)
+
+    kv_url = os.environ["AZURE_KEYVAULT_URL"]
+    secret_name = os.environ.get("CODEX_CREDENTIALS_KV_KEY", "codex-credentials")
+    cred = DefaultAzureCredential()
+    try:
+        async with SecretClient(vault_url=kv_url, credential=cred) as kv:
+            log.info("seeding %s/%s with captured codex credentials", kv_url, secret_name)
+            await kv.set_secret(secret_name, json.dumps(blob))
+    finally:
+        await cred.close()

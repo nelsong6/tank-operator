@@ -62,7 +62,13 @@ class PodNotReady(Exception):
     pass
 
 
-SESSION_MODES = ("api_key", "subscription", "config")
+SESSION_MODES = (
+    "api_key",
+    "subscription",
+    "config",
+    "codex_config",
+    "codex_subscription",
+)
 DEFAULT_SESSION_MODE = "subscription"
 # Config mode: a one-shot pod the user logs into via `claude /login` to seed
 # the OAuth credentials in KV. Differs from regular sessions in three ways:
@@ -74,6 +80,40 @@ DEFAULT_SESSION_MODE = "subscription"
 # reads ~/.claude/.credentials.json out of the pod via exec and writes it to
 # Key Vault.
 CONFIG_MODE = "config"
+# Codex-config: same role as `config` but for the OpenAI codex CLI. User
+# runs `codex login --device-auth` interactively (terminal-friendly OAuth:
+# prints a URL + one-time code instead of opening localhost:1455 — see
+# https://developers.openai.com/codex/auth). After login, the
+# save-credentials button harvests ~/.codex/auth.json and writes it to KV
+# under `codex-credentials`. ESO mirrors KV → a Secret in the sessions
+# namespace that codex_subscription pods mount.
+CODEX_CONFIG_MODE = "codex_config"
+# Codex-subscription: consume mode for codex. Mounts the ESO-mirrored
+# `codex-credentials` Secret as a file volume; the bootstrap copies it to
+# ~/.codex/auth.json (so codex's in-place refresh has somewhere writable to
+# rewrite — Secret volumes are read-only) and launches `codex` via tmux.
+# No proxy hijack — codex talks to api.openai.com directly and rotates the
+# token bundle in-pod (per OpenAI's CI/CD auth doc: refresh-on-401 plus
+# the ~8-day last_refresh window, written back to auth.json).
+#
+# KNOWN GAP — multi-pod refresh: in-pod rotation mutates auth.json but does
+# not propagate back to KV. With two concurrent codex_subscription pods,
+# both inherit the same auth.json from KV, both eventually trigger a
+# refresh, and (if OpenAI rotates refresh_tokens on use, which is the
+# default for modern OAuth) the loser's refresh_token is invalidated. This
+# is the multi-pod sharing case — exactly what we paid the KV indirection
+# to enable, so fixing it isn't optional. Phase 2: either a write-back
+# sidecar (sufficient if OpenAI doesn't rotate refresh_tokens) or a
+# centralized codex-api-proxy that single-flights refresh (mandatory if it
+# does). Determined by observing rotation behavior in a codex_config pod.
+CODEX_SUBSCRIPTION_MODE = "codex_subscription"
+CODEX_CREDS_SECRET = os.environ.get("CODEX_CREDS_SECRET", "codex-credentials")
+# Modes that must reach the real internet directly (no platform.claude.com /
+# api.anthropic.com hijack). Adding a Claude hostAlias to a config or codex
+# pod would 404 the OAuth endpoints they're trying to reach.
+NO_CLAUDE_HIJACK_MODES = frozenset(
+    {CONFIG_MODE, CODEX_CONFIG_MODE, CODEX_SUBSCRIPTION_MODE}
+)
 # Remote-control: there used to be a dedicated `remote_control` session mode
 # whose bootstrap auto-launched `claude '/remote-control'` to put the bridge
 # URL in the TUI on session start. That cold-start raced claude's slash
@@ -266,11 +306,14 @@ class SessionManager:
         # refresh — surfaces as a 401 the user can recover from by
         # recreating the session once the gateway is healthy.
         #
-        # Config mode skips this entirely: the user is about to do `claude
-        # /login`, which has to reach the REAL platform.claude.com to
-        # complete OAuth. Pointing it at our in-cluster gateway would make
-        # the auth endpoints 404.
-        if mode != CONFIG_MODE and (self._oauth_gateway_ip or self._api_proxy_ip):
+        # Config and codex modes skip this entirely. config / codex_config
+        # need to reach real upstream OAuth endpoints (claude.ai or
+        # auth.openai.com) for first-time login; codex_subscription doesn't
+        # use platform.claude.com or api.anthropic.com at all (it talks to
+        # OpenAI). Pointing any of them at our in-cluster Claude gateway
+        # would 404 the auth endpoints (or, in codex_subscription's case,
+        # be just irrelevant overhead).
+        if mode not in NO_CLAUDE_HIJACK_MODES and (self._oauth_gateway_ip or self._api_proxy_ip):
             host_aliases: list[dict[str, Any]] = []
             if self._oauth_gateway_ip:
                 host_aliases.append(
@@ -304,6 +347,32 @@ class SessionManager:
                     "configMap": {"name": OAUTH_GATEWAY_CA_CONFIGMAP},
                 }
             ]
+        # codex_subscription pods mount the ESO-mirrored codex-credentials
+        # Secret as a read-only file at /etc/codex-creds/auth.json. The
+        # bootstrap copies it into ~/.codex/auth.json (writable, mode 600)
+        # so codex's in-place token rotation has somewhere to rewrite —
+        # Secret volumes are read-only by construction. `optional: true`
+        # lets the pod boot before any codex_config harvest has run; the
+        # bootstrap surfaces a clear error in that case instead of the
+        # kubelet getting stuck on a missing-Secret mount.
+        if mode == CODEX_SUBSCRIPTION_MODE:
+            container = next(c for c in pod_spec["containers"] if c["name"] == "claude")
+            container.setdefault("volumeMounts", []).append(
+                {
+                    "name": "codex-creds",
+                    "mountPath": "/etc/codex-creds",
+                    "readOnly": True,
+                }
+            )
+            pod_spec.setdefault("volumes", []).append(
+                {
+                    "name": "codex-creds",
+                    "secret": {
+                        "secretName": CODEX_CREDS_SECRET,
+                        "optional": True,
+                    },
+                }
+            )
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",

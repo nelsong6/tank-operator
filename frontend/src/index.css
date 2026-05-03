@@ -88,6 +88,10 @@
   --mode-api-key-fg: #c8b6f5;
   --mode-config-bg: rgba(217, 119, 87, 0.12);
   --mode-config-fg: #e6b59a;
+  --mode-codex-subscription-bg: rgba(120, 200, 180, 0.12);
+  --mode-codex-subscription-fg: #9fd6c5;
+  --mode-codex-config-bg: rgba(180, 200, 120, 0.10);
+  --mode-codex-config-fg: #c9d68b;
 
   /* Radii */
   --radius-sm: 0.375rem;
@@ -579,9 +583,11 @@ button:disabled {
   flex-shrink: 0;
 }
 
-.mode-subscription   { background: var(--mode-subscription-bg); color: var(--mode-subscription-fg); }
-.mode-api_key        { background: var(--mode-api-key-bg); color: var(--mode-api-key-fg); }
-.mode-config         { background: var(--mode-config-bg); color: var(--mode-config-fg); }
+.mode-subscription        { background: var(--mode-subscription-bg); color: var(--mode-subscription-fg); }
+.mode-api_key             { background: var(--mode-api-key-bg); color: var(--mode-api-key-fg); }
+.mode-config              { background: var(--mode-config-bg); color: var(--mode-config-fg); }
+.mode-codex_subscription  { background: var(--mode-codex-subscription-bg); color: var(--mode-codex-subscription-fg); }
+.mode-codex_config        { background: var(--mode-codex-config-bg); color: var(--mode-codex-config-fg); }
 
 /* Profile footer — OWUI Sidebar.svelte:1593-1638 */
 

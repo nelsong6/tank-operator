@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal, type TerminalHandle } from "./Terminal";
 import { authedFetch, bootstrapAuth, logout, startLogin } from "./auth";
 
-type SessionMode = "api_key" | "subscription" | "config";
+type SessionMode =
+  | "api_key"
+  | "subscription"
+  | "config"
+  | "codex_subscription"
+  | "codex_config";
 
 interface Session {
   id: string;
@@ -18,6 +23,8 @@ const MODE_LABELS: Record<SessionMode, string> = {
   api_key: "API key",
   subscription: "Subscription",
   config: "Config sub",
+  codex_subscription: "Codex sub",
+  codex_config: "Codex config",
 };
 
 // Compact labels for the inline session-row chip — "Subscription" is too wide
@@ -26,15 +33,30 @@ const MODE_CHIP_LABELS: Record<SessionMode, string> = {
   api_key: "api",
   subscription: "sub",
   config: "config",
+  codex_subscription: "codex",
+  codex_config: "codex-cfg",
 };
 
 const MODE_HINTS: Record<SessionMode, string> = {
   subscription: "Default — uses claude.ai login",
   api_key: "Billed via API",
   config: "Log in once · seeds KV for future sessions",
+  codex_subscription: "Codex CLI · uses ChatGPT login from KV",
+  codex_config: "codex login --device-auth · seeds KV for codex sub",
 };
 
-const MODE_ORDER: SessionMode[] = ["subscription", "api_key", "config"];
+const MODE_ORDER: SessionMode[] = [
+  "subscription",
+  "api_key",
+  "config",
+  "codex_subscription",
+  "codex_config",
+];
+
+// Modes whose pods carry harvestable credentials — the "save" button
+// surfaces on session rows in these modes. Kept as a Set so adding a third
+// future config mode doesn't grow an OR chain.
+const CONFIG_MODES = new Set<SessionMode>(["config", "codex_config"]);
 
 interface SessionUser {
   sub: string;
@@ -539,12 +561,16 @@ export function App() {
                         <IconExternal />
                       </button>
                     )}
-                    {s.mode === "config" && (
+                    {CONFIG_MODES.has(s.mode) && (
                       <button
                         className="session-action"
                         onClick={(e) => { e.stopPropagation(); saveCredentials(s.id); }}
                         disabled={busy || !isLive}
-                        title="capture ~/.claude/.credentials.json from this pod and write it to KV"
+                        title={
+                          s.mode === "codex_config"
+                            ? "capture ~/.codex/auth.json from this pod and write it to KV"
+                            : "capture ~/.claude/.credentials.json from this pod and write it to KV"
+                        }
                       >
                         save
                       </button>

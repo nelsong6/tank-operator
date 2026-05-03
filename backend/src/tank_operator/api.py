@@ -19,7 +19,7 @@ from .auth import (
     mint_install_state,
     verify_install_state,
 )
-from .credentials_seed import CredentialsSeedError, harvest_and_save
+from .credentials_seed import CredentialsSeedError, harvest_and_save, harvest_codex_and_save
 from .exec_proxy import bridge
 from .profiles import ProfileStore
 from .sessions import (
@@ -270,14 +270,16 @@ async def patch_session(
 async def save_credentials(
     session_id: str, user: User = Depends(current_user)
 ) -> dict[str, str]:
-    """Capture ~/.claude/.credentials.json from a config-mode session and seed KV.
+    """Capture credentials from a *_config session and seed KV.
 
-    Only valid for sessions in `config` mode — both as a UX guard
-    (the button only shows on those tabs) and as a defense-in-depth check
+    Mode dispatch:
+      - `config`        → ~/.claude/.credentials.json → KV `claude-code-credentials`
+      - `codex_config`  → ~/.codex/auth.json          → KV `codex-credentials`
+
+    Both paths only valid for their respective config modes — both as a
+    UX guard (the button only shows on those tabs) and as defense-in-depth
     so a misconfigured caller can't dump credentials out of a regular
-    session pod's mounted Secret. After write, ESO mirrors KV → the
-    api-proxy's mounted Secret within ~1m and the proxy's ext_proc
-    sidecar takes over rotation from the next upstream 401.
+    session pod's mounted Secret.
     """
     try:
         session = await sessions.get_session(owner=user.email, session_id=session_id)
@@ -285,17 +287,22 @@ async def save_credentials(
         raise HTTPException(status_code=403, detail="session not owned by caller")
     except SessionNotFound:
         raise HTTPException(status_code=404, detail="session not found")
-    if session.mode != "config":
+    if session.mode not in ("config", "codex_config"):
         raise HTTPException(
             status_code=400,
-            detail="save-credentials is only valid for config-mode sessions",
+            detail="save-credentials is only valid for config / codex_config sessions",
         )
     try:
         pod_name = await sessions.get_pod_name(owner=user.email, session_id=session_id)
     except PodNotReady:
         raise HTTPException(status_code=503, detail="pod not ready")
     try:
-        await harvest_and_save(namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
+        if session.mode == "config":
+            await harvest_and_save(namespace=SESSIONS_NAMESPACE, pod_name=pod_name)
+        else:
+            await harvest_codex_and_save(
+                namespace=SESSIONS_NAMESPACE, pod_name=pod_name
+            )
     except CredentialsSeedError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"id": session_id, "status": "saved"}

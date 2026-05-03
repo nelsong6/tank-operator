@@ -69,6 +69,56 @@ EOF
 EOF
   exec claude /login
 fi
+# Codex-config mode: parallel of `config` mode for the OpenAI codex CLI.
+# Drops the user into `codex login --device-auth`, which is the headless-
+# friendly OAuth flow (prints a URL + one-time code, vs the default flow
+# that opens a browser callback on localhost:1455 — unreachable from a
+# pod). Once the user completes login, ~/.codex/auth.json contains the
+# token bundle (auth_mode + tokens.{access_token, id_token, refresh_token}
+# + last_refresh per developers.openai.com/codex/auth/ci-cd-auth) and the
+# tank-operator save-credentials button harvests it to KV. tmux-wrapped
+# so a tab reload during the device-code wait doesn't lose the flow.
+if [ "${TANK_SESSION_MODE}" = "codex_config" ]; then
+  mkdir -p $HOME/.codex
+  # cli_auth_credentials_store=file forces the file-backed store; without
+  # it codex may try the OS keychain, which doesn't exist in the pod.
+  cat > $HOME/.codex/config.toml <<'EOF'
+cli_auth_credentials_store = "file"
+EOF
+  exec tmux new-session -s tank 'codex login --device-auth; exec bash'
+fi
+# Codex-subscription mode: consume the harvested auth.json. The
+# orchestrator mounts the ESO-mirrored codex-credentials Secret read-only
+# at /etc/codex-creds/auth.json (mount is `optional: true` so the pod
+# still boots if no harvest has happened yet — we surface that as a
+# bootstrap error here instead of letting the kubelet hang).
+#
+# Copy semantics: codex refreshes its token bundle in place on a ~8-day
+# cadence and on upstream 401 (per OpenAI's CI/CD auth doc), and Secret
+# volumes are read-only. Copying to ~/.codex/auth.json gives codex a
+# writable file to rotate in.
+#
+# Multi-pod gap: in-pod rotation does not flow back to KV today, so two
+# concurrent pods will both inherit the same auth.json and may race on
+# refresh — known issue, Phase 2 (write-back sidecar or codex-api-proxy)
+# decides which way. See backend/src/tank_operator/sessions.py near
+# CODEX_SUBSCRIPTION_MODE for the full picture.
+if [ "${TANK_SESSION_MODE}" = "codex_subscription" ]; then
+  mkdir -p $HOME/.codex
+  cat > $HOME/.codex/config.toml <<'EOF'
+cli_auth_credentials_store = "file"
+EOF
+  if [ ! -f /etc/codex-creds/auth.json ]; then
+    echo "no codex credentials found in /etc/codex-creds/auth.json" >&2
+    echo "spawn a 'Codex (config)' session and complete \`codex login --device-auth\` first," >&2
+    echo "then click Save Credentials. Once KV has the auth.json, ESO will mirror it" >&2
+    echo "into this namespace and a fresh codex_subscription pod will pick it up." >&2
+    exec tmux new-session -s tank 'exec bash'
+  fi
+  cp /etc/codex-creds/auth.json $HOME/.codex/auth.json
+  chmod 600 $HOME/.codex/auth.json
+  exec tmux new-session -s tank 'codex; exec bash'
+fi
 # MCP auth is delegated to the mcp-auth-proxy sidecar — claude reaches
 # in-cluster HTTP MCP servers via 127.0.0.1 ports declared in
 # /workspace/.mcp.json, and the sidecar reads the projected SA token
